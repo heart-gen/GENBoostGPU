@@ -1,5 +1,5 @@
 import cupy as cp
-from genboostgpu.boosting import boosting_elastic_net
+from genboostgpu.boosting_net import boosting_elastic_net
 
 def test_boosting_runs_on_small_matrix():
     X = cp.random.randint(0, 3, size=(20, 10))  # fake genotypes
