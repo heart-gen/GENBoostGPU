@@ -9,6 +9,7 @@ def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500,
         alphas=[0.1, 0.5, 1.0], l1_ratios=[0.1, 0.5, 0.9],
         ridge_alphas=[0.1, 1.0, 10.0], cv=5, refit_each_iter=False,
+        standardize=True
 ):
     """
     Boosting ElasticNet with final Ridge refit,
@@ -69,7 +70,7 @@ def boosting_elastic_net(
                                      alphas=ridge_alphas, cv=cv)
         best_ridge_alpha = best_ridge["alpha"]
 
-        ridge_model = Ridge(alpha=best_ridge_alpha, max_iter=5_000)
+        ridge_model = Ridge(alpha=best_ridge_alpha)
         ridge_model.fit(X[:, kept_idx], y)
 
         preds = ridge_model.predict(X[:, kept_idx])
@@ -141,7 +142,7 @@ def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000):
     return {"alpha": best_alpha, "l1_ratio": best_l1}
 
 
-def _cv_ridge(X, y, alphas=[0.1, 1.0, 10.0], cv=5, max_iter=5000):
+def _cv_ridge(X, y, alphas=[0.1, 1.0, 10.0], cv=5):
     """
     Manual cross-validation for cuML Ridge regression.
     Evaluates all alphas in one loop using CuPy batching.
@@ -162,7 +163,7 @@ def _cv_ridge(X, y, alphas=[0.1, 1.0, 10.0], cv=5, max_iter=5000):
 
         fold_scores = []
         for alpha in alphas:
-            model = Ridge(alpha=alpha, max_iter=max_iter)
+            model = Ridge(alpha=alpha)
             model.fit(X_train, y_train)
             preds = model.predict(X_val)
 
