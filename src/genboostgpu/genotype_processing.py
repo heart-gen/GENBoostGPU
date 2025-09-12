@@ -1,6 +1,6 @@
 import cudf
 import cupy as cp
-from cuml.impute import SimpleImputer
+from cuml.preprocessing import SimpleImputer
 
 def filter_zero_variance(X, snp_ids, threshold=1e-8):
     """
