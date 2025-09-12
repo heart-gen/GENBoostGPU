@@ -1,6 +1,6 @@
 import cupy as cp
 import pytest
-from genboostgpu.boosting_net import (
+from genboostgpu.enet_boosting import (
     boosting_elastic_net, _cv_elasticnet, _cv_ridge
 )
 

@@ -1,7 +1,7 @@
 import cupy as cp
 import cudf
 import pandas as pd
-from genboostgpu.genotype_processing import (
+from genboostgpu.snp_processing import (
     filter_zero_variance, impute_snps, run_ld_clumping,
     preprocess_genotypes, filter_cis_window
 )
