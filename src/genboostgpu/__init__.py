@@ -1,4 +1,4 @@
-from .utils import *
-from .boosting_net import *
-from .genotype_processing import *
+from .io import *
+from .enet_boosting import *
+from .snp_processing import *
 
