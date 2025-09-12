@@ -6,14 +6,15 @@ authors = [
     {name = "Kynon J Benjamin",email = "kj.benjamin90@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "cudf-cu12 (>=25.8.0,<26.0.0)",
     "cuml-cu12 (>=25.8.0,<26.0.0)",
     "dask-cuda (>=25.8.0,<26.0.0)",
     "pandas (>=2.3.2,<3.0.0)",
     "cupy-cuda12x (>=13.3.0,<14.0.0)",
-    "numpy (<2.3.0)"
+    "numpy (<2.3.0)",
+    "pandas-plink (>=2.3.2,<3.0.0)"
 ]
 
 [tool.poetry]
