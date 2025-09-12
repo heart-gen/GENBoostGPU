@@ -1,6 +1,6 @@
 [project]
 name = "genboostgpu"
-version = "0.1.0"
+version = "0.0.0"
 description = ""
 authors = [
     {name = "Kynon J Benjamin",email = "kj.benjamin90@gmail.com"}
@@ -16,6 +16,11 @@ dependencies = [
 [tool.poetry]
 packages = [{include = "genboostgpu", from = "src"}]
 
+[tool.poetry-dynamic-versioning]
+enable = true
+style = "pep440"
+dirty = true
+format-jinja = "{base}+{commit}"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
