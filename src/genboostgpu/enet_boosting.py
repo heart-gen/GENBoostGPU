@@ -5,6 +5,10 @@ import pandas as pd
 from cuml.metrics import mean_squared_error
 from cuml.linear_model import ElasticNet, Ridge
 
+__all__ = [
+    "boosting_elastic_net",
+]
+
 def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500,
         alphas=[0.1, 0.5, 1.0], l1_ratios=[0.1, 0.5, 0.9],

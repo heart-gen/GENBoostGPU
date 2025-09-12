@@ -3,6 +3,12 @@ import cupy as cp
 import pandas as pd
 from pandas_plink import read_plink
 
+__all__ = [
+    "load_genotypes",
+    "load_phenotypes",
+    "save_results",
+]
+
 def load_phenotypes(pheno_file):
     """
     Reads phenotype (CpG methylation) data into cuDF.
