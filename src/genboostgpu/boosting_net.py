@@ -2,15 +2,16 @@ import cudf
 import cupy as cp
 import numpy as np
 import pandas as pd
-from cuml.linear_model import ElasticNetCV, RidgeCV
+from cuml.metrics import mean_squared_error
+from cuml.linear_model import ElasticNet, Ridge
 
 def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500,
         alphas=[0.1, 0.5, 1.0], l1_ratios=[0.1, 0.5, 0.9],
-        cv=5, refit_each_iter=False,
+        ridge_alphas=[0.1, 1.0, 10.0], cv=5, refit_each_iter=False,
 ):
     """
-    Boosting ElasticNetCV with final RidgeCV refit,
+    Boosting ElasticNet with final Ridge refit,
     genome-wide betas, and SNP-based variance components.
     """
     # Standardization
@@ -24,11 +25,8 @@ def boosting_elastic_net(
 
     # Global hyperparameters (if not tuning each iter)
     if not refit_each_iter:
-        model_cv = ElasticNetCV(alphas=alphas, l1_ratio=l1_ratios,
-                                cv=cv, max_iter=5_000)
-        model_cv.fit(X, y)
-        best_alpha = model_cv.alpha_
-        best_l1 = model_cv.l1_ratio_
+        best_params = _cv_elasticnet(X, y, alphas, l1_ratios, cv=cv)
+        best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
     else:
         best_alpha, best_l1 = None, None
         
@@ -37,23 +35,20 @@ def boosting_elastic_net(
         corrs = cp.corrcoef(X.T, residuals)[-1, :-1]
         top_idx = cp.argsort(cp.abs(corrs))[-batch_size:]
 
-        # run elastic net
+        # choose params
         if refit_each_iter:
-            model = ElasticNetCV(alphas=alphas, l1_ratio=l1_ratios,
-                                 cv=cv, max_iter=5000)
-            model.fit(X[:, top_idx], residuals)
-            best_alpha = model.alpha_
-            best_l1 = model.l1_ratio_
-        else:
-            model = ElasticNetCV(alphas=[best_alpha],
-                                 l1_ratio=[best_l1],
-                                 cv=cv, max_iter=5_000)
-            model.fit(X[:, top_idx], residuals)
+            best_params = _cv_elasticnet(X[:, top_idx], residuals,
+                                               alphas, l1_ratios, cv=cv)
+            best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
 
+        # Fit elastic net
+        model = ElasticNet(alpha=best_alpha, l1_ratio=best_l1, max_iter=5_000)
+        model.fit(X[:, top_idx], residuals)
         preds = model.predict(X[:, top_idx])
-        residuals = residuals - preds
+        
 
         # accumulate betas
+        residuals = residuals - preds
         betas_boosting[top_idx] += model.coef_
 
         h2_estimates.append(cp.var(preds).item())
@@ -62,7 +57,7 @@ def boosting_elastic_net(
         if it > 10 and np.std(h2_estimates[-5:]) < 1e-4:
             break
 
-    # Final RidgeCV refit
+    # Final Ridge refit (manual CV)
     kept_idx = cp.where(betas_boosting != 0)[0]
     ridge_betas_full = cp.zeros(X.shape[1])
     kept_snps = []
@@ -70,7 +65,11 @@ def boosting_elastic_net(
     ridge_model = None
 
     if len(kept_idx) > 0:
-        ridge_model = RidgeCV(alphas=(0.1, 1.0, 10.0), cv=cv)
+        best_ridge = _cv_ridge(X[:, kept_idx], y,
+                                     alphas=ridge_alphas, cv=cv)
+        best_ridge_alpha = best_ridge["alpha"]
+
+        ridge_model = Ridge(alpha=best_ridge_alpha, max_iter=5_000)
         ridge_model.fit(X[:, kept_idx], y)
 
         preds = ridge_model.predict(X[:, kept_idx])
@@ -88,15 +87,92 @@ def boosting_elastic_net(
     h2_unscaled = float(cp.sum(ridge_betas_full ** 2 * snp_variances))
 
     return {
-        "alpha": best_alpha,
-        "l1_ratio": best_l1,
-        "kept_snps": kept_snps,
-        "final_r2": final_r2,
         "betas_boosting": betas_boosting,
         "h2_estimates": h2_estimates,
+        "kept_snps": kept_snps,
         "ridge_betas_full": ridge_betas_full,
+        "final_r2": final_r2,
         "ridge_model": ridge_model,
         "snp_ids": snp_ids, # this is the original SNP ids
         "h2_unscaled": h2_unscaled,
-        "snp_variances": snp_variances
+        "snp_variances": snp_variances,
+        "best_enet": {"alpha": best_alpha, "l1_ratio": best_l1},
+        "best_ridge": {"alpha": best_ridge["alpha"] if kept_idx.size > 0 else None}
     }
+
+
+def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000):
+    """
+    Manual cross-validation for cuML ElasticNet.
+    Evaluates all (alpha, l1_ratio) combos using CuPy batching.
+    """
+    n = X.shape[0]
+    fold_size = n // cv
+    grid = [(a, l) for a in alphas for l in l1_ratios]
+    n_grid = len(grid)
+
+    all_scores = cp.zeros(n_grid)
+
+    for k in range(cv):
+        val_idx = slice(k * fold_size, (k + 1) * fold_size)
+        train_mask = cp.ones(n, dtype=bool)
+        train_mask[val_idx] = False
+
+        X_train, y_train = X[train_mask], y[train_mask]
+        X_val, y_val = X[val_idx], y[val_idx]
+
+        fold_scores = []
+        for i, (alpha, l1) in enumerate(grid):
+            model = ElasticNet(alpha=alpha, l1_ratio=l1,
+                               max_iter=max_iter)
+            model.fit(X_train, y_train)
+            preds = model.predict(X_val)
+
+            score = mean_squared_error(y_val, preds)
+            fold_scores.append(score)
+
+        # stack scores as cupy array
+        all_scores += cp.asarray(fold_scores)
+
+    mean_scores = all_scores / cv
+    best_idx = int(cp.argmin(mean_scores))
+    best_alpha, best_l1 = grid[best_idx]
+    
+    return {"alpha": best_alpha, "l1_ratio": best_l1}
+
+
+def _cv_ridge(X, y, alphas=[0.1, 1.0, 10.0], cv=5, max_iter=5000):
+    """
+    Manual cross-validation for cuML Ridge regression.
+    Evaluates all alphas in one loop using CuPy batching.
+    """
+    n = X.shape[0]
+    fold_size = n // cv
+    n_grid = len(alphas)
+
+    all_scores = cp.zeros(n_grid)
+
+    for k in range(cv):
+        val_idx = slice(k * fold_size, (k + 1) * fold_size)
+        train_mask = cp.ones(n, dtype=bool)
+        train_mask[val_idx] = False
+
+        X_train, y_train = X[train_mask], y[train_mask]
+        X_val, y_val = X[val_idx], y[val_idx]
+
+        fold_scores = []
+        for alpha in alphas:
+            model = Ridge(alpha=alpha, max_iter=max_iter)
+            model.fit(X_train, y_train)
+            preds = model.predict(X_val)
+
+            score = mean_squared_error(y_val, preds)
+            fold_scores.append(score)
+
+        all_scores += cp.asarray(fold_scores)
+
+    mean_scores = all_scores / cv
+    best_idx = int(cp.argmin(mean_scores))
+    best_alpha = alphas[best_idx]
+
+    return {"alpha": best_alpha}
