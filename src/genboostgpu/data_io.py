@@ -22,7 +22,11 @@ def load_genotypes(plink_prefix):
     Reads PLINK genotype data and converts to cuDF DataFrame.
     """
     (bim, fam, bed) = read_plink(plink_prefix)
-    geno_df = pd.DataFrame(bed.compute(), columns=bim.snp, index=fam.iid)
+    geno = bed.compute()
+    if geno.shape[0] == len(bim):
+        geno = geno.T
+
+    geno_df = pd.DataFrame(geno, columns=bim.snp, index=fam.iid)
     return cudf.from_pandas(geno_df), bim, fam
 
 
