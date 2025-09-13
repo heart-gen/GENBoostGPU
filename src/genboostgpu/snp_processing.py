@@ -110,8 +110,15 @@ def filter_cis_window(geno_df, bim, chrom, pos, window=20_000):
     # select SNPs in window
     mask = (bim.chrom.astype(str) == str(chrom)) & \
            (bim.pos >= start) & (bim.pos <= end)
-    snps = bim.loc[mask, "snp"].to_pandas().tolist()
-    snp_pos = bim.loc[mask, "pos"].to_pandas().tolist()
+
+    def _to_list(series):
+        if hasattr(series, "to_arrow"):
+            return series.to_arrow().to_pylist()
+        else:
+            return series.tolist()
+
+    snps = _to_list(bim.loc[mask, "snp"])
+    snp_pos = _to_list(bim.loc[mask, "pos"])
 
     if len(snps) == 0:
         return None, [], []
