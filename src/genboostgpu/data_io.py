@@ -9,12 +9,15 @@ __all__ = [
     "save_results",
 ]
 
-def load_phenotypes(pheno_file):
+def load_phenotypes(pheno_file, header=True):
     """
     Reads phenotype (CpG methylation) data into cuDF.
     Rows = samples, columns = CpGs.
     """
-    return cudf.read_csv(pheno_file, sep="\t")
+    if header:
+        return cudf.read_csv(pheno_file, sep="\t")
+    else:
+        return cudf.read_csv(pheno_file, sep="\t", header=None)
 
 
 def load_genotypes(plink_prefix):
