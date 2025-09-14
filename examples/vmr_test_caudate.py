@@ -1,6 +1,7 @@
 import os
-import cupy as cp
 import cudf
+import cupy as cp
+import numpy as np
 import pandas as pd
 from pyhere import here
 from pathlib import Path
@@ -106,13 +107,15 @@ def run_single_vmr(region, chrom, start, end, error_regions,
 
     # boosting elastic net
     results = boosting_elastic_net(X, y, snps, n_iter=100,
+                                   alphas=np.arange(0.05, 1.0 + 0.05, 0.05),
                                    batch_size=min(1000, X.shape[1]))
 
     # write results
     out_prefix = Path(outdir) / f"chr{chrom}_{start}_{end}"
     Path(outdir).mkdir(parents=True, exist_ok=True)
     save_results(results["ridge_betas_full"],
-                 results["h2_estimates"], str(out_prefix))
+                 results["h2_estimates"], str(out_prefix),
+                 snp_ids=results["snp_ids"])
 
     # summary
     summary = {
