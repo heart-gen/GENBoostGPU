@@ -77,7 +77,6 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y,
     2. Impute missing (default assumes hard calls; use mean for dosage-style genotypes)
     3. LD clumping with phenotype-informed stats
     """
-
     # Filter zero variance SNPs
     X, snp_ids = filter_zero_variance(X, snp_ids, threshold=var_thresh)
     snp_pos = cp.asarray(snp_pos)[cp.isin(cp.arange(len(snp_pos)),

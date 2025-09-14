@@ -8,7 +8,8 @@ from pathlib import Path
 from genboostgpu.data_io import load_genotypes, load_phenotypes, save_results
 from genboostgpu.snp_processing import (
     filter_zero_variance, impute_snps,
-    run_ld_clumping, filter_cis_window
+    run_ld_clumping, filter_cis_window,
+    preprocess_genotypes
 )
 from genboostgpu.enet_boosting import boosting_elastic_net
 
@@ -56,7 +57,7 @@ def construct_data_path(chrom, start, end, region, dtype="plink"):
 
 
 def run_single_vmr(region, chrom, start, end, error_regions,
-                   outdir="results", window=20_000):
+                   outdir="results", window=20_000, by_hand=False):
     # skip blacklist
     if check_if_blacklisted(chrom, start, end, error_regions):
         return None
@@ -88,22 +89,25 @@ def run_single_vmr(region, chrom, start, end, error_regions,
     X = cp.asarray(geno_arr)
 
     # preprocess
-    X, snps = filter_zero_variance(X, snps)
-    X = impute_snps(X)
+    if by_hand:
+        X, snps = filter_zero_variance(X, snps)
+        X = impute_snps(X)
 
-    # subset SNPs based on filtering
-    snp_pos = [snp_pos[i] for i, sid in enumerate(snps)]
+        # subset SNPs based on filtering
+        snp_pos = [snp_pos[i] for i, sid in enumerate(snps)]
 
-    # LD clumping (phenotype-informed)
-    stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
-    keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.2,
-                               kb_window=window)
-    if keep_idx.size == 0:
-        print("No SNPs left after clumping")
-        return None
+        # LD clumping (phenotype-informed)
+        stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
+        keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.2,
+                                   kb_window=window)
+        if keep_idx.size == 0:
+            print("No SNPs left after clumping")
+            return None
 
-    X = X[:, keep_idx]
-    snps = [snps[i] for i in keep_idx.tolist()]
+        X = X[:, keep_idx]
+        snps = [snps[i] for i in keep_idx.tolist()]
+    else:
+        X, snps = preprocess_genotypes(X, snps, snp_pos, y, kb_window=window)
 
     # boosting elastic net
     results = boosting_elastic_net(X, y, snps, n_iter=100,
