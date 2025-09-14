@@ -138,11 +138,13 @@ def run_boosting_for_cpg_delayed(cpg_id, X, y, snp_ids,
 
     # Save betas if requested
     if save_full_betas:
+        kept_idx = [i for i, snp in enumerate(res["snp_ids"])]
+        
         betas_df = pd.DataFrame({
-            "snp_id": res["snp_ids"],
-            "beta_boosting": cp.asnumpy(res["betas_boosting"]),
-            "beta_ridge": cp.asnumpy(res["ridge_betas_full"]),
-            "snp_variance": cp.asnumpy(res["snp_variances"])
+            "snp_id": res["snp_ids"], # only retained
+            "beta_boosting": cp.asnumpy(res["betas_boosting"])[kept_idx],
+            "beta_ridge": cp.asnumpy(res["ridge_betas_full"])[kept_idx],
+            "snp_variance": cp.asnumpy(res["snp_variances"][kept_idx])
         })
         betas_df["variance_contrib"] = betas_df["beta_ridge"]**2 * betas_df["snp_variance"]
         betas_df.to_csv(betas_path, sep="\t", index=False)
