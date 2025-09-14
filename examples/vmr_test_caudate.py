@@ -81,10 +81,10 @@ def run_single_vmr(region, chrom, start, end, error_regions,
         return None
 
     # Convert so NaNs are perserved
-    if hasattr(geno_window, "to_numpy"):
-        geno_arr = geno_window.to_arrow().to_pandas().to_numpy(dtype="float32")
-    else:
+    try:
         geno_arr = geno_window.to_numpy(dtype="float32")
+    except ValueError:
+        geno_arr = geno_window.to_arrow().to_pandas().to_numpy(dtype="float32")
 
     X = cp.asarray(geno_arr)
 
@@ -107,7 +107,8 @@ def run_single_vmr(region, chrom, start, end, error_regions,
         X = X[:, keep_idx]
         snps = [snps[i] for i in keep_idx.tolist()]
     else:
-        X, snps = preprocess_genotypes(X, snps, snp_pos, y, kb_window=window)
+        X, snps = preprocess_genotypes(X, snps, snp_pos, y, r2_thresh=0.2,
+                                       kb_window=window)
 
     # boosting elastic net
     results = boosting_elastic_net(X, y, snps, n_iter=100,
