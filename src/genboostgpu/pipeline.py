@@ -3,6 +3,7 @@ import cupy as cp
 import pandas as pd
 from dask import delayed
 
+from .enet_boosting import boosting_elastic_net
 from .snp_processing import preprocess_genotypes, filter_cis_window
 
 __all__ = [
@@ -21,6 +22,9 @@ def prepare_cpg_inputs(cpg_list, geno_df, pheno_df, bim,
     inputs = []
 
     for cpg_id, chrom, cpg_pos in cpg_list:
+        # Phenotype vector
+        y = pheno_df[cpg_id].to_cupy()
+
         # Extract cis SNPs
         geno_window, snp_ids, snp_pos = filter_cis_window(geno_df, bim,
                                                           chrom, cpg_pos,
@@ -29,25 +33,23 @@ def prepare_cpg_inputs(cpg_list, geno_df, pheno_df, bim,
             continue
 
         # Safely convert NaNs
-        if hasattr(geno_window, "to_numpy"):
-            geno_arr = geno_window.to_arrow().to_pandas().to_numpy(dtype="float32")
-        else:
+        try:
             geno_arr = geno_window.to_numpy(dtype="float32")
+        except ValueError:
+            geno_arr = geno_window.to_arrow().to_pandas().to_numpy(dtype="float32")
+
 
         geno_arr = cp.asarray(geno_arr)
 
         # Filter zero-variance SNPs
-        X, snp_ids = preprocess_genotypes(geno_arr, snp_ids, snp_pos,
-                                          threshold=var_thresh,
+        X, snp_ids = preprocess_genotypes(geno_arr, snp_ids, snp_pos, y,
+                                          var_thresh=var_thresh,
                                           impute_strategy=impute_strategy,
                                           r2_thresh=r2_thresh,
                                           kb_window=window)
 
         if X.shape[1] == 0:
             continue
-
-        # Phenotype vector
-        y = pheno_df[cpg_id].to_cupy()
 
         inputs.append((cpg_id, X, y, snp_ids))
 
@@ -109,7 +111,7 @@ def run_boosting_for_cpg_delayed(cpg_id, X, y, snp_ids,
     betas_path = os.path.join(outdir, f"{cpg_id}_betas.tsv")
 
     if not overwrite and os.path.exists(summary_path):
-        return summary_path  # skip if already done
+        return delayed(lambda x: x)(summary_path)
 
     # Run boosting model
     res = boosting_elastic_net(

@@ -1,5 +1,5 @@
-import cupy as cp
 import cudf
+import cupy as cp
 import pandas as pd
 from genboostgpu.snp_processing import (
     filter_zero_variance, impute_snps, run_ld_clumping,

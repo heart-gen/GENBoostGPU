@@ -1,9 +1,9 @@
 import os
+import cudf
+import pytest
 import tempfile
 import cupy as cp
 import pandas as pd
-import cudf
-import pytest
 from genboostgpu import data_io
 
 def test_load_phenotypes_reads_file(tmp_path):
