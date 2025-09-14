@@ -33,13 +33,27 @@ def load_genotypes(plink_prefix):
     return cudf.from_pandas(geno_df), bim, fam
 
 
-def save_results(betas, h2_estimates, out_prefix):
+def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None):
     """
     Save betas and h2 estimates to disk.
     """
-    betas_df = pd.DataFrame({"beta": cp.asnumpy(betas)})
-    h2_df = pd.DataFrame({"iteration": range(len(h2_estimates)),
-                          "h2": h2_estimates})
+    betas_np = cp.asnumpy(betas)
 
+    betas_df = pd.DataFrame({
+        "snp": snp_ids if snp_ids is not None else range(len(betas_np)),
+        "beta": betas_np
+    })
+
+    h2_df = pd.DataFrame({
+        "iteration": range(len(h2_estimates)),
+        "h2": h2_estimates
+    })
+
+    if meta:
+        for k, v in meta.items():
+            betas_df[k] = v
+            h2_df[k] = v
+
+    # per-VMR outputs
     betas_df.to_csv(f"{out_prefix}_betas.tsv", sep="\t", index=False)
     h2_df.to_csv(f"{out_prefix}_h2.tsv", sep="\t", index=False)
