@@ -1,6 +1,6 @@
 # GENBoostGPU
 
-**GPU-accelerated boosting elastic net for epigenomic data**
+**Genomic Elastic Net Boosting on GPU (GENBoostGPU)**
 
 GENBoostGPU provides a scalable framework for running elastic net regression with 
 boosting across thousands of CpG sites, leveraging GPU acceleration with RAPIDS cuML, 
@@ -22,3 +22,4 @@ epigenomics.
 - Flexible output: betas, heritability estimates, cross-validation results
 
 ---
+
