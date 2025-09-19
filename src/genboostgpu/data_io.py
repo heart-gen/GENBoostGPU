@@ -26,8 +26,6 @@ def load_genotypes(plink_prefix, to_cudf=True, dtype="int8"):
     """
     (bim, fam, bed) = read_plink(plink_prefix)
     geno = bed.compute().astype(dtype)
-    geno = geno.T #(snps, samples)
-
     geno_df = pd.DataFrame(geno, index=bim.snp, columns=fam.fid)
     if to_cudf:
         return cudf.DataFrame.from_records(geno_df.to_records()), bim, fam
