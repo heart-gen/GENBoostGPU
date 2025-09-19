@@ -97,14 +97,14 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y,
     return X[:, keep_idx], [snp_ids[i] for i in keep_idx.tolist()]
 
 
-def filter_cis_window(geno_df, bim, chrom, pos, window=20_000):
+def filter_cis_window(geno_df, bim, chrom, start, end, window=20_000):
     """
     Select SNPs within a cis-window around a 'start' position
     for the phenotype.
     """
     # define cis window boundaries
-    start = pos - window
-    end   = pos + window
+    start = start - window
+    end   = end + window
 
     # select SNPs in window
     mask = (bim.chrom.astype(str) == str(chrom)) & \
