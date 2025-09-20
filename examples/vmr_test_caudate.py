@@ -66,7 +66,7 @@ def run_single_vmr(region, chrom, start, end, error_regions,
 
     # load genotype + bim/fam
     geno_path = construct_data_path(chrom, start, end, region, "plink")
-    geno_df, bim, fam = load_genotypes(str(geno_path))
+    geno_arr, bim, fam = load_genotypes(str(geno_path))
 
     # load phenotype
     pheno_path = construct_data_path(chrom, start, end, region, "vmr")
@@ -74,17 +74,11 @@ def run_single_vmr(region, chrom, start, end, error_regions,
     y = (y - y.mean()) / (y.std() + 1e-6)
 
     # filter cis window
-    geno_window, snps, snp_pos = filter_cis_window(geno_df, bim, chrom, start,
-                                                   window=window)
+    geno_window, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start,
+                                                   end, window=window)
     if geno_window is None or len(snps) == 0:
         print("No SNPs in window")
         return None
-
-    # Convert so NaNs are perserved
-    try:
-        geno_arr = geno_window.to_numpy(dtype="float32")
-    except ValueError:
-        geno_arr = geno_window.to_arrow().to_pandas().to_numpy(dtype="float32")
 
     X = cp.asarray(geno_arr)
 
