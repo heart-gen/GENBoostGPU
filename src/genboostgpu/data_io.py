@@ -26,7 +26,7 @@ def load_genotypes(plink_prefix, dtype="int8"):
     """
     (bim, fam, bed) = read_plink(plink_prefix)
     geno = bed.compute().astype(dtype)
-    return np.asarray(geno).T, bim, fam
+    return cp.asarray(geno).T, bim, fam
 
 
 def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None):
