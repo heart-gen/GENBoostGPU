@@ -74,13 +74,11 @@ def run_single_vmr(region, chrom, start, end, error_regions,
     y = (y - y.mean()) / (y.std() + 1e-6)
 
     # filter cis window
-    geno_window, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start,
-                                                   end, window=window)
-    if geno_window is None or len(snps) == 0:
+    X, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start,
+     	                                 end, window=window)
+    if X is None or len(snps) == 0:
         print("No SNPs in window")
         return None
-
-    X = cp.asarray(geno_arr)
 
     # preprocess
     if by_hand:
