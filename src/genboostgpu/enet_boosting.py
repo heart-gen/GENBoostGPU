@@ -34,7 +34,7 @@ def boosting_elastic_net(
         best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
     else:
         best_alpha, best_l1 = None, None
-        
+
     for it in range(n_iter):
         # correlation between residuals and SNPs
         corrs = cp.corrcoef(X.T, residuals)[-1, :-1]
@@ -50,7 +50,7 @@ def boosting_elastic_net(
         model = ElasticNet(alpha=best_alpha, l1_ratio=best_l1, max_iter=5_000)
         model.fit(X[:, top_idx], residuals)
         preds = model.predict(X[:, top_idx])
-        
+
 
         # accumulate betas
         residuals = residuals - preds
@@ -142,7 +142,7 @@ def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000):
     mean_scores = all_scores / cv
     best_idx = int(cp.argmin(mean_scores))
     best_alpha, best_l1 = grid[best_idx]
-    
+
     return {"alpha": best_alpha, "l1_ratio": best_l1}
 
 
