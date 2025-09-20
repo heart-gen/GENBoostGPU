@@ -12,7 +12,7 @@ __all__ = [
     "run_boosting_for_cpg_delayed",
 ]
 
-def prepare_cpg_inputs(cpg_list, geno_df, pheno_df, bim,
+def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
                        window=20_000, var_thresh=1e-6,
                        impute_strategy="most_frequent",
                        r2_thresh=0.1):
@@ -26,20 +26,11 @@ def prepare_cpg_inputs(cpg_list, geno_df, pheno_df, bim,
         y = pheno_df[cpg_id].to_cupy()
 
         # Extract cis SNPs
-        geno_window, snp_ids, snp_pos = filter_cis_window(geno_df, bim,
-                                                          chrom, cpg_pos,
-                                                          window)
-        if geno_window is None or len(snp_ids) == 0:
+        geno_arr, snp_ids, snp_pos = filter_cis_window(geno_arr, bim,
+                                                       chrom, cpg_pos,
+                                                       window)
+        if geno_arr is None or len(snp_ids) == 0:
             continue
-
-        # Safely convert NaNs
-        try:
-            geno_arr = geno_window.to_numpy(dtype="float32")
-        except ValueError:
-            geno_arr = geno_window.to_arrow().to_pandas().to_numpy(dtype="float32")
-
-
-        geno_arr = cp.asarray(geno_arr)
 
         # Filter zero-variance SNPs
         X, snp_ids = preprocess_genotypes(geno_arr, snp_ids, snp_pos, y,
@@ -139,7 +130,7 @@ def run_boosting_for_cpg_delayed(cpg_id, X, y, snp_ids,
     # Save betas if requested
     if save_full_betas:
         kept_idx = [i for i, snp in enumerate(res["snp_ids"])]
-        
+
         betas_df = pd.DataFrame({
             "snp_id": res["snp_ids"], # only retained
             "beta_boosting": cp.asnumpy(res["betas_boosting"])[kept_idx],
