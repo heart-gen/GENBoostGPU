@@ -97,7 +97,7 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y,
     return X[:, keep_idx], [snp_ids[i] for i in keep_idx.tolist()]
 
 
-def filter_cis_window(geno_df, bim, chrom, pos: int, end: int = None,
+def filter_cis_window(geno_arr, bim, chrom, pos: int, end: int = None,
                       window: int = 20_000):
     """
     Select SNPs within a cis-window around a CpG/phenotype position.
@@ -110,20 +110,13 @@ def filter_cis_window(geno_df, bim, chrom, pos: int, end: int = None,
 
     # select SNPs in window
     mask = (bim.chrom.astype(str) == str(chrom)) & \
-           (bim.pos >= start) & (bim.pos <= end)
+        (bim.pos >= start) & (bim.pos <= end)
 
-    def _to_list(series):
-        if hasattr(series, "to_arrow"):
-            return series.to_arrow().to_pylist()
-        else:
-            return series.tolist()
-
-    snps = _to_list(bim.loc[mask, "snp"])
-    snp_pos = _to_list(bim.loc[mask, "pos"])
-
-    if len(snps) == 0:
+    if not mask.any():
         return None, [], []
 
-    geno_window = geno_df[snps]
+    snp_ids = bim.loc[mask, "snp"].tolist()
+    snp_pos = bim.loc[mask, "pos"].tolist()
+    snp_idx = bim.index[mask].to_numpy()
 
-    return geno_window, snps, snp_pos
+    return geno_arr[:, snp_idx], snp_ids, snp_pos

@@ -20,17 +20,13 @@ def load_phenotypes(pheno_file, header=True):
         return cudf.read_csv(pheno_file, sep="\t", header=None)
 
 
-def load_genotypes(plink_prefix, to_cudf=True, dtype="int8"):
+def load_genotypes(plink_prefix, dtype="int8"):
     """
-    Reads PLINK genotype data and converts to cuDF DataFrame.
+    Reads PLINK genotype data and converts to CuPy.
     """
     (bim, fam, bed) = read_plink(plink_prefix)
     geno = bed.compute().astype(dtype)
-    geno_df = pd.DataFrame(geno, index=bim.snp, columns=fam.fid)
-    if to_cudf:
-        return cudf.DataFrame.from_records(geno_df.to_records()), bim, fam
-    else:
-        return geno_df, bim, fam
+    return np.asarray(geno).T, bim, fam
 
 
 def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None):
