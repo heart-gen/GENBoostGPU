@@ -74,10 +74,8 @@ def run_ld_clumping(X, snp_pos, stat, r2_thresh=0.1, fnc=ld_func):
 
 
 def preprocess_genotypes(X, snp_ids, snp_pos, y,
-                         var_thresh=1e-8,
-                         impute_strategy="most_frequent",
-                         r2_thresh=0.1,
-                         kb_window=20_000):
+                         var_thresh=1e-8, impute_strategy="most_frequent",
+                         r2_thresh=0.1, fnc=ld_func):
     """
     Full preprocessing pipeline:
     1. Zero-variance filter
@@ -96,9 +94,7 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y,
     stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
 
     # LD clumping
-    keep_idx = run_ld_clumping(X, snp_pos, stat,
-                               r2_thresh=r2_thresh,
-                               kb_window=kb_window)
+    keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=r2_thresh, fnc=fnc)
 
     # Final reduced matrix
     return X[:, keep_idx], [snp_ids[i] for i in keep_idx.tolist()]
