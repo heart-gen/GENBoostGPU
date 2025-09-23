@@ -28,9 +28,15 @@ def impute_snps(X, strategy="most_frequent"):
     return imputer.fit_transform(X)
 
 
-def run_ld_clumping(X, snp_pos, stat, r2_thresh=0.1, kb_window=250_000):
+def ld_func(r2_thresh):
+    return int(100 / r2_thresh)
+
+
+def run_ld_clumping(X, snp_pos, stat, r2_thresh=0.1, fnc=ld_func):
     """
     PLINK-like greedy LD clumping on GPU.
+
+    Default for size is ld_func: 100 / r2_thresh.
     """
     n_snps = X.shape[1]
     snp_pos = cp.asarray(snp_pos)
@@ -50,6 +56,7 @@ def run_ld_clumping(X, snp_pos, stat, r2_thresh=0.1, kb_window=250_000):
         pos = snp_pos[idx]
 
         # restrict to nearby SNPs
+        kb_window = fnc(r2_thresh)
         neighbor_mask = (cp.abs(snp_pos - pos) <= kb_window)
         neighbor_idx = cp.where(neighbor_mask)[0]
 
