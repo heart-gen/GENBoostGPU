@@ -22,6 +22,14 @@ from .snp_processing import (
     impute_snps
 )
 
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module="pandera._pandas_deprecated"
+)
+
 __all__ = [
     "boosting_elastic_net",
     "preprocess_genotypes",
