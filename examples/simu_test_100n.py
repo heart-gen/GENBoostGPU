@@ -35,7 +35,7 @@ def build_windows(num_samples):
 
     # Load phenotypes
     pheno_path = construct_data_path(num_samples, "phen")
-    
+
     # Build windows config list
     pheno_loc_df = get_pheno_loc(num_samples)
     windows = []
@@ -62,7 +62,7 @@ def main():
     # Run with dask orchestration
     df = run_windows_with_dask(
         windows, outdir="results", window_size=500_000,
-        n_iter=100, n_trials=15, use_window=False,
+        n_iter=100, n_trials=10, use_window=False,
         save=True, prefix="simu_100"
     )
     print(f"Completed {len(df)} VMRs")
