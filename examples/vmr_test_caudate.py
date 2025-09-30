@@ -61,7 +61,7 @@ def construct_data_path(chrom, start, end, region, dtype="plink"):
 
 
 def run_single_vmr(region, chrom, start, end, error_regions,
-                   outdir="results", window=20_000, by_hand=False):
+                   outdir="results", window_size=20_000, by_hand=False):
     # skip blacklist
     if check_if_blacklisted(chrom, start, end, error_regions):
         return None
@@ -79,7 +79,7 @@ def run_single_vmr(region, chrom, start, end, error_regions,
 
     # filter cis window
     X, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start, end,
-                                         window=window, use_window=True)
+                                         window_size=window_size, use_window=True)
     if X is None or len(snps) == 0:
         print("No SNPs in window")
         return None
@@ -145,7 +145,7 @@ def main():
     tasks = []
     for _, row in vmr_list.iterrows():
         task = delayed(run_single_vmr)(region, row[0], row[1], row[2],
-                                       error_regions, window=500_000)
+                                       error_regions, window_size=500_000)
         tasks.append(task)
 
     results = compute(*tasks)
