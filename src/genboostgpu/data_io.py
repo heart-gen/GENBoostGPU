@@ -15,7 +15,7 @@ def load_phenotypes(pheno_file, header=True):
     Rows = samples, columns = CpGs.
     """
     if header:
-        return cudf.read_csv(pheno_file, sep="\t")
+        return cudf.read_csv(pheno_file, sep="\t", header=0)
     else:
         return cudf.read_csv(pheno_file, sep="\t", header=None)
 
