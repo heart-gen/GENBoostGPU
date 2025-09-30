@@ -20,7 +20,7 @@ def load_phenotypes(pheno_file, header=True):
         return cudf.read_csv(pheno_file, sep="\t", header=None)
 
 
-def load_genotypes(plink_prefix, dtype="int8"):
+def load_genotypes(plink_prefix, dtype="float32"):
     """
     Reads PLINK genotype data and converts to CuPy.
     """
