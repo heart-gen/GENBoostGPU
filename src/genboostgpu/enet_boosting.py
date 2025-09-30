@@ -75,8 +75,9 @@ def boosting_elastic_net(
     ridge_model = None
 
     if len(kept_idx) > 0:
+        ridge_trials = int(n_trials / 2)
         best_ridge = _tune_ridge_optuna(X[:, kept_idx], y, ridge_range=ridge_alphas, cv=cv,
-                                        n_trials=n_trials, subsample_frac=subsample_frac)
+                                        n_trials=ridge_trials, subsample_frac=subsample_frac)
         best_ridge_alpha = best_ridge["alpha"]
 
         ridge_model = Ridge(alpha=best_ridge_alpha)
