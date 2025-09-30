@@ -14,7 +14,10 @@ dependencies = [
     "pandas (>=2.3.2,<3.0.0)",
     "cupy-cuda12x (>=13.3.0,<14.0.0)",
     "numpy (<2.3.0)",
-    "pandas-plink (>=2.3.2,<3.0.0)"
+    "pandas-plink (>=2.3.2,<3.0.0)",
+    "optuna (>=4.5.0,<5.0.0)",
+    "scikit-learn (>=1.7.2,<2.0.0)",
+    "numba (<0.62)"
 ]
 
 [tool.poetry]

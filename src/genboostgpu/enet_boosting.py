@@ -20,8 +20,8 @@ __all__ = [
 
 def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500, n_trials=20,
-        alphas=(1e-2, 1.0), l1_ratios=(0.1, 0.9), subsample_frac=0.7,
-        ridge_alphas=(1e-2, 1e2), cv=5, refit_each_iter=False, standardize=True
+        alphas=(0.1, 1.0), l1_ratios=(0.1, 0.9), subsample_frac=0.7,
+        ridge_alphas=(0.1, 10), cv=5, refit_each_iter=False, standardize=True
 ):
     """
     Boosting ElasticNet with final Ridge refit,
