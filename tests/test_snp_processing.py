@@ -24,7 +24,7 @@ def test_run_ld_clumping_keeps_at_least_one():
     X = cp.random.randint(0, 3, size=(20, 5))
     snp_pos = cp.arange(5) * 1000
     stat = cp.random.randn(5)
-    keep = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.9, kb_window=2000)
+    keep = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.9)
     assert keep.shape[0] >= 1
 
 
@@ -48,6 +48,6 @@ def test_filter_cis_window_returns_expected_snps():
         "snp1":[0,1], "snp2":[1,2], "snp3":[0,0]
     })
     geno_window, snps, pos = filter_cis_window(geno_df, bim, chrom=1,
-                                               pos=2000, window=1000)
+                                               start=2000, window_size=1000)
     assert "snp2" in snps
     assert geno_window is not None

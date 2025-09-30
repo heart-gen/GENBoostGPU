@@ -64,7 +64,7 @@ def test_prepare_cpg_inputs_returns_expected(toy_data):
         toy_data["geno_df"],
         toy_data["pheno_df"],
         toy_data["bim"],
-        window=1000
+        window_size=1000
     )
     assert isinstance(inputs, list)
     assert len(inputs) == 1
@@ -81,7 +81,7 @@ def test_run_boosting_for_cpgs_runs_and_adds_cpg_id(toy_data):
         toy_data["geno_df"],
         toy_data["pheno_df"],
         toy_data["bim"],
-        window=1000
+        window_size=1000
     )
     results = pipeline.run_boosting_for_cpgs(inputs, n_iter=5)
     assert isinstance(results, list)
@@ -96,7 +96,7 @@ def test_run_boosting_for_cpg_delayed_writes_files(toy_data):
         toy_data["geno_df"],
         toy_data["pheno_df"],
         toy_data["bim"],
-        window=1000
+        window_size=1000
     )
     cpg_id, X, y, snp_ids = inputs[0]
     outdir = toy_data["tmpdir"]
