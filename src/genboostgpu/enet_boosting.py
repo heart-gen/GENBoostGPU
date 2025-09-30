@@ -16,7 +16,8 @@ __all__ = [
 def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500, n_trials=20,
         alphas=(0.1, 1.0), l1_ratios=(0.1, 0.9), subsample_frac=0.7,
-        ridge_alphas=(0.1, 10), cv=5, refit_each_iter=False, standardize=True
+        ridge_grid=(1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1, 1, 3, 10),
+        cv=5, refit_each_iter=False, standardize=True
 ):
     """
     Boosting ElasticNet with final Ridge refit,
@@ -75,10 +76,9 @@ def boosting_elastic_net(
     ridge_model = None
 
     if len(kept_idx) > 0:
-        ridge_trials = int(n_trials / 2)
         ridge_cv = min(3, cv)
-        best_ridge = _tune_ridge_optuna(X[:, kept_idx], y, ridge_range=ridge_alphas, cv=ridge_cv,
-                                        n_trials=ridge_trials, subsample_frac=subsample_frac)
+        best_ridge = _tune_ridge_optuna(X[:, kept_idx], y, ridge_grid=ridge_grid,
+                                        cv=ridge_cv, subsample_frac=subsample_frac)
         best_ridge_alpha = best_ridge["alpha"]
 
         ridge_model = Ridge(alpha=best_ridge_alpha)
@@ -86,9 +86,11 @@ def boosting_elastic_net(
 
         preds = ridge_model.predict(X[:, kept_idx])
         valid_mask = ~cp.isnan(y) & ~cp.isnan(preds)
-        if valid_mask.sum() > 1:
+        if valid_mask.sum() > 1 and cp.var(preds[valid_mask]) > 0 and cp.var(y[valid_mask]) > 0:
             r2 = cp.corrcoef(y[valid_mask], preds[valid_mask])[0, 1] ** 2
             final_r2 = float(r2)
+        else:
+            final_r2 = 0.0
 
         # Ridge mask for all tested SNPs
         ridge_betas_full[kept_idx] = ridge_model.coef_
@@ -162,8 +164,8 @@ def _tune_elasticnet_optuna(X, y, n_trials=20, cv=5, max_iter=5000,
     }
 
 
-def _tune_ridge_optuna(X, y, n_trials=20, cv=5, subsample_frac=0.7,
-                       ridge_range=(1e-2, 1e2)):
+def _tune_ridge_optuna(X, y, cv=5, subsample_frac=0.7,
+                       ridge_grid=(1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1, 1, 3, 10)):
     # Subsample
     n_samples = X.shape[0]
     idx = cp.random.choice(n_samples, int(n_samples * subsample_frac), replace=False)
@@ -174,10 +176,10 @@ def _tune_ridge_optuna(X, y, n_trials=20, cv=5, subsample_frac=0.7,
     n_jobs = cpu_count()
 
     def objective(trial):
-        alpha = trial.suggest_float("alpha", ridge_range[0], ridge_range[1], log=True)
+        alpha = trial.suggest_categorical("alpha", ridge_grid)
 
         kf = KFold(n_splits=cv, shuffle=True, random_state=13)
-        mse_scores = []
+        tasks = []
 
         for fold_idx, (train_idx, val_idx) in enumerate(kf.split(idx_np)):
             train_idx = cp.asarray(train_idx)
@@ -186,21 +188,13 @@ def _tune_ridge_optuna(X, y, n_trials=20, cv=5, subsample_frac=0.7,
             X_train, y_train = X_sub[train_idx], y_sub[train_idx]
             X_val, y_val = X_sub[val_idx], y_sub[val_idx]
 
-            model = Ridge(alpha=alpha)
-            model.fit(X_train, y_train)
-            
-            preds = model.predict(X_val)
-            mse = cp.mean((preds - y_val) ** 2)
-            mse_scores.append(mse)
+            tasks.append(_fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha))
 
-            trial.report(mse, step=fold_idx)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+        mses = compute(*tasks)
+        return cp.mean(cp.asarray(mses)).item()
 
-        return float(cp.mean(cp.asarray(mse_scores)))
-
-    study = optuna.create_study(direction="minimize",
-                                pruner=optuna.pruners.MedianPruner(n_warmup_steps=2))
+    study = optuna.create_study(direction="minimize")
+    n_trials = len(ridge_grid)
     study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, timeout=60)
 
     return {"alpha": study.best_params["alpha"]}
@@ -249,7 +243,6 @@ def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000, subsample_frac=
     return {"alpha": best_param[0], "l1_ratio": best_param[1]}
 
 
-## OLD FUNCTIONS
 def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
     @delayed
     def task():
@@ -261,6 +254,7 @@ def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
     return task()
 
 
+## OLD FUNCTIONS
 def _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
                        max_iter, optuna=True):
     @delayed
