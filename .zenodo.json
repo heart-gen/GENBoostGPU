@@ -1,0 +1,38 @@
+{
+  "title": "GENBoostGPU: GPU-accelerated elastic net boosting for large-scale epigenomics",
+  "upload_type": "software",
+  "description": "GENBoostGPU provides a scalable framework for running elastic net regression with boosting across thousands of CpG sites, leveraging GPU acceleration with RAPIDS cuML, CuPy, and cuDF. It supports SNP preprocessing, cis-window filtering, LD clumping, missing data imputation, and phenotype integration — all optimized for large-scale epigenomics.",
+  "creators": [
+    {
+      "name": "Benjamin, Kynon J. M.",
+      "affiliation": "Northwestern University",
+      "orcid": "0000-0003-2016-4646"
+    },
+    {
+      "name": "Bennett, Alexis",
+      "affiliation": "Northwestern University"
+    }
+  ],
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "genomics",
+    "epigenomics",
+    "dna-methylation",
+    "elastic-net",
+    "boosting",
+    "gpu",
+    "snp-heritability",
+    "rapids",
+    "cupy",
+    "cuml"
+  ],
+  "related_identifiers": [
+    {
+      "relation": "isSupplementTo",
+      "identifier": "https://github.com/heart-gen/GENBoostGPU",
+      "scheme": "url"
+    }
+  ],
+  "access_right": "open",
+  "notes": "If you use GENBoostGPU in your research, please cite this software using the provided DOI."
+}
