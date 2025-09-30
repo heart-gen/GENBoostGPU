@@ -3,9 +3,15 @@ name = "genboostgpu"
 version = "0.0.0"
 description = "GENBoostGPU provides a scalable framework for running elastic net regression with boosting across thousands of CpG sites, leveraging GPU acceleration with RAPIDS cuML, CuPy, and cuDF."
 authors = [
-    {name = "Kynon J Benjamin",email = "kj.benjamin90@gmail.com"}
+    {name = "Kynon J Benjamin", email = "kj.benjamin90@gmail.com"},
+    {name = "Alexis Bennett", email = "alexis.bennett@northwestern.edu"}
 ]
+maintainers = [
+    {name = "Kynon J Benjamin", email = "kj.benjamin90@gmail.com"}
+]
+dynamic = [ "version" ]
 readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10,<4.0"
 dependencies = [
     "cudf-cu12 (>=25.8.0,<26.0.0)",
@@ -19,6 +25,12 @@ dependencies = [
     "scikit-learn (>=1.7.2,<2.0.0)",
     "numba (<0.62)"
 ]
+keywords = ["genomics", "epigenomics", "dna-methylation", "elastic-net", "boosting", "gpu", "snp-heritability"]
+
+[project.urls]
+homepage = "https://github.com/heart-gen/GENBoostGPU"
+repository = "https://github.com/heart-gen/GENBoostGPU"
+"Bug Tracker" = "https://github.com/heart-gen/GENBoostGPU/issues"
 
 [tool.poetry]
 packages = [{include = "genboostgpu", from = "src"}]
