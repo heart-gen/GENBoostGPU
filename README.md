@@ -1,5 +1,5 @@
 # GENBoostGPU
-
+[![DOI](https://zenodo.org/badge/1055676922.svg)](https://doi.org/10.5281/zenodo.17238797)
 **Genomic Elastic Net Boosting on GPU (GENBoostGPU)**
 
 GENBoostGPU provides a scalable framework for running elastic net regression with 
@@ -168,7 +168,7 @@ If you use GENBoostGPU in your research, please cite:
 
 > Alexis Bennett and Kynon J.M. Benjamin
 > **GENBoostGPU: GPU-accelerated elastic net boosting for large-scale epigenomics**
-> (preprint / manuscript in preparation)
+> DOI: [10.5281/zenodo.17238798](https://doi.org/10.5281/zenodo.17238798)
 
 ---
 
@@ -178,3 +178,4 @@ GENBoostGPU is licensed under the **GPL-3.0** license.
 See the [LICENSE](LICENSE) file for details.
 
 ---
+
