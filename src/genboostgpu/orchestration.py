@@ -42,6 +42,7 @@ def run_windows_with_dask(windows, error_regions=None,
             geno_arr=w.get("geno_arr"), bim=w.get("bim"), fam=w.get("fam"),
             geno_path=w.get("geno_path"), pheno=w.get("pheno"),
             pheno_path=w.get("pheno_path"), pheno_id=w.get("pheno_id"),
+            has_header=w.get("has_header"), y_pos=w.get("y_pos"),
             error_regions=error_regions, outdir=outdir,
             window_size=window_size, by_hand=by_hand, n_trials=n_trials,
             n_iter=n_iter, use_window=use_window

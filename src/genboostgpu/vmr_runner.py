@@ -13,7 +13,7 @@ __all__ = [
     "run_single_window",
 ]
 
-def run_single_window(chrom, start, end,
+def run_single_window(chrom, start, end, has_header=True, y_pos=None,
                       geno_arr=None, bim=None, fam=None, geno_path=None,
                       pheno=None, pheno_path=None, pheno_id=None,
                       error_regions=None, outdir="results", window_size=500_000,
@@ -38,13 +38,13 @@ def run_single_window(chrom, start, end,
     if pheno is None:
         if pheno_path is None:
             raise ValueError("Either pheno array or pheno_path must be provided")
-        df = load_phenotypes(str(pheno_path), header=True)
+        df = load_phenotypes(str(pheno_path), header=has_header)
         if pheno_id is None:
             raise ValueError("pheno_id required if using pheno_path")
-        pheno = df[pheno_id].to_cupy()
-
-    if pheno_id is None:
-        pheno_id = "pheno" # Default name
+        if y_pos is not None:
+            pheno = df.iloc[:, y_pos].to_cupy()
+        else:
+            pheno = df[pheno_id].to_cupy()
 
     y = (pheno - pheno.mean()) / (pheno.std() + 1e-6)
 
