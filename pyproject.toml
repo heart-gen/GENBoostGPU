@@ -1,6 +1,5 @@
 [project]
 name = "genboostgpu"
-version = "0.0.0"
 description = "GENBoostGPU provides a scalable framework for running elastic net regression with boosting across thousands of CpG sites, leveraging GPU acceleration with RAPIDS cuML, CuPy, and cuDF."
 authors = [
     {name = "Kynon J Benjamin", email = "kj.benjamin90@gmail.com"},
@@ -9,7 +8,6 @@ authors = [
 maintainers = [
     {name = "Kynon J Benjamin", email = "kj.benjamin90@gmail.com"}
 ]
-dynamic = [ "version" ]
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10,<4.0"
@@ -34,6 +32,7 @@ repository = "https://github.com/heart-gen/GENBoostGPU"
 
 [tool.poetry]
 packages = [{include = "genboostgpu", from = "src"}]
+version = "0.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
@@ -46,7 +45,6 @@ mypy = "^1.18.1"
 enable = true
 style = "pep440"
 dirty = true
-format-jinja = "{base}+{commit}"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
