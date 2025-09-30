@@ -12,7 +12,7 @@ __all__ = [
 def run_windows_with_dask(windows, error_regions=None,
                           outdir="results", window_size=500_000,
                           by_hand=False, n_trials=20, n_iter=100,
-                          use_window=True):
+                          use_window=True, save=True, prefix="vmr"):
     """
     Orchestrate boosting_elastic_net across genomic windows.
 
@@ -56,5 +56,7 @@ def run_windows_with_dask(windows, error_regions=None,
         cluster.close()
 
     df = pd.DataFrame([r for r in results if r is not None])
-    df.to_csv(f"{outdir}/summary_all_windows.tsv", sep="\t", index=False)
+    if save:
+        df.to_parquet(f"{outdir}/{prefix}.summary_windows.parquet", index=False)
+
     return df
