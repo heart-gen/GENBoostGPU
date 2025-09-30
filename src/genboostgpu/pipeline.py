@@ -13,7 +13,7 @@ __all__ = [
 ]
 
 def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
-                       window=20_000, var_thresh=1e-6,
+                       window_size=20_000, var_thresh=1e-6,
                        impute_strategy="most_frequent",
                        r2_thresh=0.1):
     """
@@ -28,7 +28,7 @@ def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
         # Extract cis SNPs
         geno_arr, snp_ids, snp_pos = filter_cis_window(geno_arr, bim,
                                                        chrom, cpg_pos,
-                                                       window)
+                                                       window_size)
         if geno_arr is None or len(snp_ids) == 0:
             continue
 
@@ -36,8 +36,7 @@ def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
         X, snp_ids = preprocess_genotypes(geno_arr, snp_ids, snp_pos, y,
                                           var_thresh=var_thresh,
                                           impute_strategy=impute_strategy,
-                                          r2_thresh=r2_thresh,
-                                          kb_window=window)
+                                          r2_thresh=r2_thresh)
 
         if X.shape[1] == 0:
             continue

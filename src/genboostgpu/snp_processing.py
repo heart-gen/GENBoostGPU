@@ -101,18 +101,18 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y,
 
 
 def filter_cis_window(geno_arr, bim, chrom, pos: int, end: int = None,
-                      window: int = 20_000, use_window: bool = False):
+                      window_size: int = 20_000, use_window: bool = False):
     """
     Select SNPs within a cis-window around a CpG/phenotype position.
     """
     # define cis window boundaries
     if not use_window:
-        window = 0
+        window_size = 0
     
-    start = pos - window
+    start = pos - window_size
     if end is None:
         end = pos
-    end   = end + window
+    end   = end + window_size
 
     # select SNPs in window
     mask = (bim.chrom.astype(str) == str(chrom)) & \

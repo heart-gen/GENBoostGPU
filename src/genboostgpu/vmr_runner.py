@@ -16,7 +16,7 @@ __all__ = [
 def run_single_window(chrom, start, end,
                       geno_arr=None, bim=None, fam=None, geno_path=None,
                       pheno=None, pheno_path=None, pheno_id=None,
-                      error_regions=None, outdir="results", window=500_000,
+                      error_regions=None, outdir="results", window_size=500_000,
                       by_hand=False, n_trials=20, n_iter=100, use_window=True):
     """
     Run boosting elastic net for one genomic window.
@@ -59,7 +59,8 @@ def run_single_window(chrom, start, end,
 
     # Filter cis window
     X, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start, end,
-                                         window=window, use_window=use_window)
+                                         window_size=window_size,
+                                         use_window=use_window)
     if X is None or len(snps) == 0:
         return None
 
