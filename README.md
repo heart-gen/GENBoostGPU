@@ -1,5 +1,6 @@
 # GENBoostGPU
 [![DOI](https://zenodo.org/badge/1055676922.svg)](https://doi.org/10.5281/zenodo.17238797)
+
 **Genomic Elastic Net Boosting on GPU (GENBoostGPU)**
 
 GENBoostGPU provides a scalable framework for running elastic net regression with 
@@ -178,4 +179,5 @@ GENBoostGPU is licensed under the **GPL-3.0** license.
 See the [LICENSE](LICENSE) file for details.
 
 ---
+
 
