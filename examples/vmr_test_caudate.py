@@ -3,8 +3,12 @@ import cudf
 import cupy as cp
 import numpy as np
 import pandas as pd
+from numba import cuda
 from pyhere import here
 from pathlib import Path
+from dask import delayed, compute
+from dask.distributed import Client
+from dask_cuda import LocalCUDACluster
 from genboostgpu.data_io import load_genotypes, load_phenotypes, save_results
 from genboostgpu.snp_processing import (
     filter_zero_variance, impute_snps,
@@ -74,8 +78,8 @@ def run_single_vmr(region, chrom, start, end, error_regions,
     y = (y - y.mean()) / (y.std() + 1e-6)
 
     # filter cis window
-    X, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start,
-     	                                 end, window=window)
+    X, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start, end,
+                                         window=window, use_window=True)
     if X is None or len(snps) == 0:
         print("No SNPs in window")
         return None
@@ -90,8 +94,7 @@ def run_single_vmr(region, chrom, start, end, error_regions,
 
         # LD clumping (phenotype-informed)
         stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
-        keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.2,
-                                   kb_window=window)
+        keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.2)
         if keep_idx.size == 0:
             print("No SNPs left after clumping")
             return None
@@ -99,12 +102,10 @@ def run_single_vmr(region, chrom, start, end, error_regions,
         X = X[:, keep_idx]
         snps = [snps[i] for i in keep_idx.tolist()]
     else:
-        X, snps = preprocess_genotypes(X, snps, snp_pos, y, r2_thresh=0.2,
-                                       kb_window=window)
+        X, snps = preprocess_genotypes(X, snps, snp_pos, y, r2_thresh=0.2)
 
     # boosting elastic net
-    results = boosting_elastic_net(X, y, snps, n_iter=100,
-                                   alphas=np.arange(0.05, 1.0 + 0.05, 0.05),
+    results = boosting_elastic_net(X, y, snps, n_iter=100, n_trials=20,
                                    batch_size=min(1000, X.shape[1]))
 
     # write results
@@ -135,17 +136,26 @@ def main():
     error_regions = get_error_list()
     vmr_list = get_vmr_list(region)
 
-    all_summaries = []
-    for _, row in vmr_list.iterrows():
-        chrom, start, end = row[0], row[1], row[2]
-        summary = run_single_vmr(region, chrom, start, end,
-                                 error_regions, window=500_000)
-        if summary:
-            all_summaries.append(summary)
+    if len(cuda.gpus) > 1:
+        cluster = LocalCUDACluster()
+        client = Client(cluster)
+    else:
+        client = cluster = None
 
-    if all_summaries:
-        df = pd.DataFrame(all_summaries)
-        df.to_csv("results/summary_all_vmrs.tsv", sep="\t", index=False)
+    tasks = []
+    for _, row in vmr_list.iterrows():
+        task = delayed(run_single_vmr)(region, row[0], row[1], row[2],
+                                       error_regions, window=500_000)
+        tasks.append(task)
+
+    results = compute(*tasks)
+
+    if client:
+        client.close()
+        cluster.close()
+
+    df = pd.DataFrame(results)
+    df.to_csv("results/summary_all_vmrs.tsv", sep="\t", index=False)
 
 
 if __name__ == "__main__":
