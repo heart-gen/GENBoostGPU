@@ -3,16 +3,11 @@ import optuna
 import cupy as cp
 import numpy as np
 import pandas as pd
-from numba import cuda
 from itertools import product
 from dask import delayed, compute
 from multiprocessing import cpu_count
 from sklearn.model_selection import KFold
 from cuml.linear_model import ElasticNet, Ridge
-
-# Multi-GPU support
-from dask_cuda import LocalCUDACluster
-from dask.distributed import Client
 
 __all__ = [
     "boosting_elastic_net",
@@ -153,15 +148,7 @@ def _tune_elasticnet_optuna(X, y, n_trials=20, cv=5, max_iter=5000,
 
     # Move index to CPU for sklearn's KFold
     idx_np = cp.asnumpy(cp.arange(X_sub.shape[0]))
-
-    # Multi-GPU setup
-    use_multi_gpu = len(cuda.gpus) > 1
     n_jobs = cpu_count()
-    if use_multi_gpu:
-        cluster = LocalCUDACluster()
-        client = Client(cluster)
-    else:
-        cluster = client = None
 
     def objective(trial):
         alpha = trial.suggest_float("alpha", alpha_range[0], alpha_range[1], log=True)
@@ -188,10 +175,6 @@ def _tune_elasticnet_optuna(X, y, n_trials=20, cv=5, max_iter=5000,
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, timeout=100)
 
-    if client:
-        client.close()
-        cluster.close()
-
     return {
         "alpha": study.best_params["alpha"],
         "l1_ratio": study.best_params["l1_ratio"],
@@ -207,15 +190,7 @@ def _tune_ridge_optuna(X, y, n_trials=20, cv=5, subsample_frac=0.7,
 
     # Move index to CPU for sklearn's KFold
     idx_np = cp.asnumpy(cp.arange(X_sub.shape[0]))
-
-    # Multi-GPU setup
-    use_multi_gpu = len(cuda.gpus) > 1
     n_jobs = cpu_count()
-    if use_multi_gpu:
-        cluster = LocalCUDACluster()
-        client = Client(cluster)
-    else:
-        cluster = client = None
 
     def objective(trial):
         alpha = trial.suggest_float("alpha", ridge_range[0], ridge_range[1], log=True)
@@ -260,14 +235,6 @@ def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000, subsample_frac=
 
     # CPU index for KFold
     idx_np = cp.asnumpy(cp.arange(X_sub.shape[0]))
-
-    # Multi-GPU setup
-    use_multi_gpu = len(cuda.gpus) > 1
-    if use_multi_gpu:
-        cluster = LocalCUDACluster()
-        client = Client(cluster)
-    else:
-        cluster = client = None
 
     kf = KFold(n_splits=cv, shuffle=True, random_state=13)
     param_grid = list(product(alphas, l1_ratios))
