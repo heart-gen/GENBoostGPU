@@ -111,6 +111,17 @@ def boosting_elastic_net(
     }
 
 
+def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
+    @delayed
+    def task():
+        model = Ridge(alpha=alpha)
+        model.fit(X_train, y_train)
+        preds = model.predict(X_val)
+        mse = cp.mean((preds - y_val) ** 2)
+        return mse
+    return task()
+
+
 def _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
                        max_iter, optuna=True):
     @delayed
@@ -124,17 +135,6 @@ def _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
             return mse
         else:
             return mse, (alpha, l1)
-    return task()
-
-
-def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
-    @delayed
-    def task():
-        model = Ridge(alpha=alpha)
-        model.fit(X_train, y_train)
-        preds = model.predict(X_val)
-        mse = cp.mean((preds - y_val) ** 2)
-        return mse
     return task()
 
 
@@ -155,25 +155,37 @@ def _tune_elasticnet_optuna(X, y, n_trials=20, cv=5, max_iter=5000,
         l1_ratio = trial.suggest_float("l1_ratio", l1_range[0], l1_range[1])
 
         kf = KFold(n_splits=cv, shuffle=True, random_state=13)
-        tasks = []
+        mse_scores = []
 
-        for train_idx, val_idx in kf.split(idx_np):
+        for fold_idx, (train_idx, val_idx) in enumerate(kf.split(idx_np)):
             train_idx = cp.asarray(train_idx)
             val_idx = cp.asarray(val_idx)
 
             X_train, y_train = X_sub[train_idx], y_sub[train_idx]
             X_val, y_val = X_sub[val_idx], y_sub[val_idx]
 
-            task = _fit_score_delayed(X_train, y_train, X_val,
-                                      y_val, alpha, l1_ratio, max_iter)
-            tasks.append(task)
+            model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio,
+                               max_iter=max_iter, fit_intercept=True)
+            model.fit(X_train, y_train)
 
-        mses = compute(*tasks)
-        avg_mse = cp.mean(cp.asarray(mses)).item()
-        return avg_mse
+            preds = model.predict(X_val)
+            mse = cp.mean((preds - y_val) ** 2).item()
+            mse_scores.append(mse)
+            trial.report(mse, step=fold_idx)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+            # task = _fit_score_delayed(X_train, y_train, X_val,
+            #                           y_val, alpha, l1_ratio, max_iter)
+            # tasks.append(task)
+        return float(cp.mean(cp.asarray(mse_scores)))
 
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, timeout=100)
+        # mses = compute(*tasks)
+        # avg_mse = cp.mean(cp.asarray(mses)).item()
+        # return avg_mse
+
+    study = optuna.create_study(direction="minimize",
+                                pruner=optuna.pruners.MedianPruner(n_warmup_steps=2))
+    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, timeout=60)
 
     return {
         "alpha": study.best_params["alpha"],
