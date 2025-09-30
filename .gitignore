@@ -2,3 +2,5 @@ __pycache__/
 .coverage
 cufile.log
 *~
+dist/
+.pytest_cache/
