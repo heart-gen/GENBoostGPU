@@ -1,19 +1,27 @@
 import cudf
+import optuna
 import cupy as cp
 import numpy as np
 import pandas as pd
-from cuml.metrics import mean_squared_error
+from numba import cuda
+from itertools import product
+from dask import delayed, compute
+from multiprocessing import cpu_count
+from sklearn.model_selection import KFold
 from cuml.linear_model import ElasticNet, Ridge
+
+# Multi-GPU support
+from dask_cuda import LocalCUDACluster
+from dask.distributed import Client
 
 __all__ = [
     "boosting_elastic_net",
 ]
 
 def boosting_elastic_net(
-        X, y, snp_ids, n_iter=50, batch_size=500,
-        alphas=[0.1, 0.5, 1.0], l1_ratios=[0.1, 0.5, 0.9],
-        ridge_alphas=[0.1, 1.0, 10.0], cv=5, refit_each_iter=False,
-        standardize=True
+        X, y, snp_ids, n_iter=50, batch_size=500, n_trials=20,
+        alphas=(1e-2, 1.0), l1_ratios=(0.1, 0.9), subsample_frac=0.7,
+        ridge_alphas=(1e-2, 1e2), cv=5, refit_each_iter=False, standardize=True
 ):
     """
     Boosting ElasticNet with final Ridge refit,
@@ -30,7 +38,9 @@ def boosting_elastic_net(
 
     # Global hyperparameters (if not tuning each iter)
     if not refit_each_iter:
-        best_params = _cv_elasticnet(X, y, alphas, l1_ratios, cv=cv)
+        best_params = _tune_elasticnet_optuna(X, y, n_trials=n_trials, cv=cv,
+                                              alpha_range=alphas, l1_range=l1_ratios,
+                                              subsample_frac=subsample_frac)
         best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
     else:
         best_alpha, best_l1 = None, None
@@ -42,8 +52,8 @@ def boosting_elastic_net(
 
         # choose params
         if refit_each_iter:
-            best_params = _cv_elasticnet(X[:, top_idx], residuals,
-                                               alphas, l1_ratios, cv=cv)
+            best_params = _tune_elasticnet_optuna(X[:, top_idx], residuals,
+                                                  n_trials=n_trials, cv=cv)
             best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
 
         # Fit elastic net
@@ -70,8 +80,8 @@ def boosting_elastic_net(
     ridge_model = None
 
     if len(kept_idx) > 0:
-        best_ridge = _cv_ridge(X[:, kept_idx], y,
-                                     alphas=ridge_alphas, cv=cv)
+        best_ridge = _tune_ridge_optuna(X[:, kept_idx], y, ridge_range=ridge_alphas, cv=cv,
+                                        n_trials=n_trials, subsample_frac=subsample_frac)
         best_ridge_alpha = best_ridge["alpha"]
 
         ridge_model = Ridge(alpha=best_ridge_alpha)
@@ -106,78 +116,187 @@ def boosting_elastic_net(
     }
 
 
-def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000):
+def _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
+                       max_iter, optuna=True):
+    @delayed
+    def task():
+        model = ElasticNet(alpha=alpha, l1_ratio=l1,
+                           max_iter=max_iter, fit_intercept=True)
+        model.fit(X_train, y_train)
+        preds = model.predict(X_val)
+        mse = cp.mean((preds - y_val) ** 2)
+        if optuna:
+            return mse
+        else:
+            return mse, (alpha, l1)
+    return task()
+
+
+def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
+    @delayed
+    def task():
+        model = Ridge(alpha=alpha)
+        model.fit(X_train, y_train)
+        preds = model.predict(X_val)
+        mse = cp.mean((preds - y_val) ** 2)
+        return mse
+    return task()
+
+
+def _tune_elasticnet_optuna(X, y, n_trials=20, cv=5, max_iter=5000,
+                            subsample_frac=0.7, alpha_range=(1e-2, 1.0),
+                            l1_range=(0.1, 0.9)):
+    # Subsample
+    n_samples = X.shape[0]
+    idx = cp.random.choice(n_samples, int(n_samples * subsample_frac), replace=False)
+    X_sub, y_sub = X[idx], y[idx]
+
+    # Move index to CPU for sklearn's KFold
+    idx_np = cp.asnumpy(cp.arange(X_sub.shape[0]))
+
+    # Multi-GPU setup
+    use_multi_gpu = len(cuda.gpus) > 1
+    n_jobs = cpu_count()
+    if use_multi_gpu:
+        cluster = LocalCUDACluster()
+        client = Client(cluster)
+    else:
+        cluster = client = None
+
+    def objective(trial):
+        alpha = trial.suggest_float("alpha", alpha_range[0], alpha_range[1], log=True)
+        l1_ratio = trial.suggest_float("l1_ratio", l1_range[0], l1_range[1])
+
+        kf = KFold(n_splits=cv, shuffle=True, random_state=13)
+        tasks = []
+
+        for train_idx, val_idx in kf.split(idx_np):
+            train_idx = cp.asarray(train_idx)
+            val_idx = cp.asarray(val_idx)
+
+            X_train, y_train = X_sub[train_idx], y_sub[train_idx]
+            X_val, y_val = X_sub[val_idx], y_sub[val_idx]
+
+            task = _fit_score_delayed(X_train, y_train, X_val,
+                                      y_val, alpha, l1_ratio, max_iter)
+            tasks.append(task)
+
+        mses = compute(*tasks)
+        avg_mse = cp.mean(cp.asarray(mses)).item()
+        return avg_mse
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, timeout=100)
+
+    if client:
+        client.close()
+        cluster.close()
+
+    return {
+        "alpha": study.best_params["alpha"],
+        "l1_ratio": study.best_params["l1_ratio"],
+    }
+
+
+def _tune_ridge_optuna(X, y, n_trials=20, cv=5, subsample_frac=0.7,
+                       ridge_range=(1e-2, 1e2)):
+    # Subsample
+    n_samples = X.shape[0]
+    idx = cp.random.choice(n_samples, int(n_samples * subsample_frac), replace=False)
+    X_sub, y_sub = X[idx], y[idx]
+
+    # Move index to CPU for sklearn's KFold
+    idx_np = cp.asnumpy(cp.arange(X_sub.shape[0]))
+
+    # Multi-GPU setup
+    use_multi_gpu = len(cuda.gpus) > 1
+    n_jobs = cpu_count()
+    if use_multi_gpu:
+        cluster = LocalCUDACluster()
+        client = Client(cluster)
+    else:
+        cluster = client = None
+
+    def objective(trial):
+        alpha = trial.suggest_float("alpha", ridge_range[0], ridge_range[1], log=True)
+
+        kf = KFold(n_splits=cv, shuffle=True, random_state=13)
+        tasks = []
+
+        for train_idx, val_idx in kf.split(idx_np):
+            train_idx = cp.asarray(train_idx)
+            val_idx = cp.asarray(val_idx)
+
+            X_train, y_train = X_sub[train_idx], y_sub[train_idx]
+            X_val, y_val = X_sub[val_idx], y_sub[val_idx]
+
+            task = _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha)
+            tasks.append(task)
+
+        mses = compute(*tasks)
+        avg_mse = cp.mean(cp.asarray(mses)).item()
+        return avg_mse
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, timeout=100)
+
+    if client:
+        client.close()
+        cluster.close()
+
+    return {"alpha": study.best_params["alpha"]}
+
+
+def _cv_elasticnet(X, y, alphas, l1_ratios, cv=5, max_iter=5000, subsample_frac=0.7):
     """
     Manual cross-validation for cuML ElasticNet.
     Evaluates all (alpha, l1_ratio) combos using CuPy batching.
     """
-    n = X.shape[0]
-    fold_size = n // cv
-    grid = [(a, l) for a in alphas for l in l1_ratios]
-    n_grid = len(grid)
+    # Subsample
+    n_samples = X.shape[0]
+    idx = cp.random.choice(n_samples, int(n_samples * subsample_frac), replace=False)
+    X_sub = X[idx]
+    y_sub = y[idx]
 
-    all_scores = cp.zeros(n_grid)
+    # CPU index for KFold
+    idx_np = cp.asnumpy(cp.arange(X_sub.shape[0]))
 
-    for k in range(cv):
-        val_idx = slice(k * fold_size, (k + 1) * fold_size)
-        train_mask = cp.ones(n, dtype=bool)
-        train_mask[val_idx] = False
+    # Multi-GPU setup
+    use_multi_gpu = len(cuda.gpus) > 1
+    if use_multi_gpu:
+        cluster = LocalCUDACluster()
+        client = Client(cluster)
+    else:
+        cluster = client = None
 
-        X_train, y_train = X[train_mask], y[train_mask]
-        X_val, y_val = X[val_idx], y[val_idx]
+    kf = KFold(n_splits=cv, shuffle=True, random_state=13)
+    param_grid = list(product(alphas, l1_ratios))
+    scores_accumulator = {param: 0.0 for param in param_grid}
 
-        fold_scores = []
-        for i, (alpha, l1) in enumerate(grid):
-            model = ElasticNet(alpha=alpha, l1_ratio=l1,
-                               max_iter=max_iter)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_val)
+    for train_idx, val_idx in kf.split(idx_np):
+        train_idx = cp.asarray(train_idx)
+        val_idx = cp.asarray(val_idx)
 
-            score = mean_squared_error(y_val, preds)
-            fold_scores.append(score)
+        X_train, y_train = X_sub[train_idx], y_sub[train_idx]
+        X_val, y_val = X_sub[val_idx], y_sub[val_idx]
 
-        # stack scores as cupy array
-        all_scores += cp.asarray(fold_scores)
+        tasks = [
+            _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
+                               max_iter, optuna=False)
+            for (alpha, l1) in param_grid
+        ]
 
-    mean_scores = all_scores / cv
-    best_idx = int(cp.argmin(mean_scores))
-    best_alpha, best_l1 = grid[best_idx]
+        results = compute(*tasks)
 
-    return {"alpha": best_alpha, "l1_ratio": best_l1}
+        for mse, param in results:
+            scores_accumulator[param] += mse
 
+    # Average scores
+    avg_scores = {param: score / cv for param, score in scores_accumulator.items()}
+    best_param = min(avg_scores, key=avg_scores.get)
 
-def _cv_ridge(X, y, alphas=[0.1, 1.0, 10.0], cv=5):
-    """
-    Manual cross-validation for cuML Ridge regression.
-    Evaluates all alphas in one loop using CuPy batching.
-    """
-    n = X.shape[0]
-    fold_size = n // cv
-    n_grid = len(alphas)
+    if client:
+        client.close()
+        cluster.close()
 
-    all_scores = cp.zeros(n_grid)
-
-    for k in range(cv):
-        val_idx = slice(k * fold_size, (k + 1) * fold_size)
-        train_mask = cp.ones(n, dtype=bool)
-        train_mask[val_idx] = False
-
-        X_train, y_train = X[train_mask], y[train_mask]
-        X_val, y_val = X[val_idx], y[val_idx]
-
-        fold_scores = []
-        for alpha in alphas:
-            model = Ridge(alpha=alpha)
-            model.fit(X_train, y_train)
-            preds = model.predict(X_val)
-
-            score = mean_squared_error(y_val, preds)
-            fold_scores.append(score)
-
-        all_scores += cp.asarray(fold_scores)
-
-    mean_scores = all_scores / cv
-    best_idx = int(cp.argmin(mean_scores))
-    best_alpha = alphas[best_idx]
-
-    return {"alpha": best_alpha}
+    return {"alpha": best_param[0], "l1_ratio": best_param[1]}
