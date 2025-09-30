@@ -28,19 +28,16 @@ def get_pheno_loc(num_samples):
     return mapped_df
 
 
-def main():
-    num_samples = os.environ.get("NUM_SAMPLES")
-
-    if not num_samples:
-        raise ValueError("NUM_SAMPLES environment variable must be set")
-
+def build_windows(num_samples):
     # load genotype + bim/fam
     geno_path = construct_data_path(num_samples, "plink")
     geno_arr, bim, fam = load_genotypes(str(geno_path))
-    print("Loaded genotype matrix")
 
+    # Load phenotypes
+    pheno_path = construct_data_path(num_samples, "phen")
+    
     # Build windows config list
-    pheno_path = construct_data_path(chrom, start, end, region, "vmr")
+    pheno_loc_df = get_pheno_loc(num_samples)
     windows = []
     for _, row in pheno_loc_df.iterrows():
         windows.append({
@@ -51,6 +48,16 @@ def main():
             "geno_arr": geno_arr,
             "pheno_path": pheno_path,
         })
+    return windows
+
+
+def main():
+    num_samples = os.environ.get("NUM_SAMPLES")
+
+    if not num_samples:
+        raise ValueError("NUM_SAMPLES environment variable must be set")
+
+    windows = build_windows(num_samples)
 
     # Run with dask orchestration
     df = run_windows_with_dask(

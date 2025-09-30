@@ -35,14 +35,7 @@ def construct_data_path(chrom, start, end, region, dtype="plink"):
         raise ValueError(f"Unknown dtype: {dtype}")
 
 
-def main():
-    region = os.environ.get("REGION")
-    if not region:
-        raise ValueError("REGION environment variable must be set")
-
-    error_regions = get_error_list()
-    vmr_list = get_vmr_list(region)
-
+def build_windows(vmr_list):
     # Build windows config list
     windows = []
     for i, row in vmr_list.iterrows():
@@ -53,16 +46,29 @@ def main():
             "chrom": chrom,
             "start": start,
             "end": end,
-            "pheno_id": f"vmr_{i}",
+            "pheno_id": f"vmr_{i+1}",
             "geno_path": geno_path,
             "pheno_path": pheno_path,
+            "has_header": False,
+            "y_pos": 2,
         })
+    return windows
+
+
+def main():
+    region = os.environ.get("REGION")
+    if not region:
+        raise ValueError("REGION environment variable must be set")
+
+    error_regions = get_error_list()
+    vmr_list = get_vmr_list(region)
+    windows = build_windows(vmr_list)
 
     # Run with dask orchestration
     df = run_windows_with_dask(
         windows, error_regions=error_regions,
         outdir="results", window_size=500_000,
-        n_iter=100, n_trials=20, use_window=True,
+        n_iter=100, n_trials=20, use_window=True, ## To decrease time lower n_trials to 10
         save=True, prefix="vmr"
     )
     print(f"Completed {len(df)} VMRs")
