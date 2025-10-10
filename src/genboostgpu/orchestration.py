@@ -9,10 +9,10 @@ __all__ = [
     "run_windows_with_dask",
 ]
 
-def run_windows_with_dask(windows, geno_arr=None, error_regions=None,
-                          outdir="results", window_size=500_000,
-                          by_hand=False, n_trials=20, n_iter=100,
-                          use_window=True, save=True, prefix="vmr"):
+def run_windows_with_dask(windows, geno_arr=None, bim=None, fam=None,
+                          error_regions=None, outdir="results",
+                          window_size=500_000, by_hand=False, n_trials=20,
+                          n_iter=100, use_window=True, save=True, prefix="vmr"):
     """
     Orchestrate boosting_elastic_net across genomic windows.
 
@@ -39,12 +39,12 @@ def run_windows_with_dask(windows, geno_arr=None, error_regions=None,
     tasks = [
         delayed(run_single_window)(
             chrom=w["chrom"], start=w["start"], end=w["end"], geno_arr=geno_arr,
-            bim=w.get("bim", None), fam=w.get("fam", None), geno_path=w.get("geno_path", None),
+            bim=bim, fam=fam, geno_path=w.get("geno_path", None),
             pheno=w.get("pheno", None), pheno_path=w.get("pheno_path", None),
             pheno_id=w.get("pheno_id", None), has_header=w.get("has_header", True),
             y_pos=w.get("y_pos", None), error_regions=error_regions,
-            outdir=outdir, window_size=window_size, by_hand=by_hand, n_trials=n_trials,
-            n_iter=n_iter, use_window=use_window
+            outdir=outdir, window_size=window_size, by_hand=by_hand,
+            n_trials=n_trials, n_iter=n_iter, use_window=use_window
         )
         for w in windows
     ]
