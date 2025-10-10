@@ -14,8 +14,8 @@ __all__ = [
 ]
 
 def run_single_window(chrom, start, end, has_header=True, y_pos=None,
-                      geno_arr=None, bim=None, fam=None, geno_path=None,
-                      pheno=None, pheno_path=None, pheno_id=None,
+                      geno_arr=None, bim=None, fam=None, geno_path=None, pheno=None,
+                      pheno_path=None, pheno_id=None, batch_cols=8192,
                       error_regions=None, outdir="results", window_size=500_000,
                       by_hand=False, n_trials=20, n_iter=100, use_window=True):
     """
@@ -69,7 +69,8 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         X, snps = filter_zero_variance(X, snps)
         X = impute_snps(X)
         snp_pos = [snp_pos[i] for i, sid in enumerate(snps)]
-        stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
+        stat = _corr_with_y_streaming(X, y, batch_cols)
+        # stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
         keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=0.2)
         if keep_idx.size == 0:
             return None
@@ -100,3 +101,20 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         "h2_unscaled": results["h2_unscaled"],
         "n_iter": len(results["h2_estimates"]),
     }
+
+
+def _corr_with_y_streaming(X, y, batch_cols: int = 8192, eps: float = 1e-12):
+    X = X.astype(cp.float32, copy=False)  # halve memory
+    y = y.astype(cp.float32, copy=False).ravel()
+
+    y = y - y.mean()
+    y_norm = cp.linalg.norm(y) + eps
+
+    chunks = []
+    for j in range(0, X.shape[1], batch_cols):
+        Xi = X[:, j:j+batch_cols]
+        Xi = Xi - Xi.mean(axis=0)
+        denom = (cp.linalg.norm(Xi, axis=0) * y_norm + eps)
+        r = (Xi.T @ y) / denom            # Pearson r per SNP
+        chunks.append(cp.abs(r))
+    return cp.concatenate(chunks, axis=0)

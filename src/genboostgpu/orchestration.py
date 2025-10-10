@@ -10,7 +10,7 @@ __all__ = [
 ]
 
 def run_windows_with_dask(windows, geno_arr=None, bim=None, fam=None,
-                          error_regions=None, outdir="results",
+                          error_regions=None, outdir="results", n_batch=2048,
                           window_size=500_000, by_hand=False, n_trials=20,
                           n_iter=100, use_window=True, save=True, prefix="vmr"):
     """
@@ -44,7 +44,8 @@ def run_windows_with_dask(windows, geno_arr=None, bim=None, fam=None,
             pheno_id=w.get("pheno_id", None), has_header=w.get("has_header", True),
             y_pos=w.get("y_pos", None), error_regions=error_regions,
             outdir=outdir, window_size=window_size, by_hand=by_hand,
-            n_trials=n_trials, n_iter=n_iter, use_window=use_window
+            n_trials=n_trials, n_iter=n_iter, use_window=use_window,
+            batch_cols=n_batch
         )
         for w in windows
     ]
