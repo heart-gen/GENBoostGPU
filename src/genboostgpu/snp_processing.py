@@ -8,15 +8,19 @@ __all__ = [
     "run_ld_clumping",
     "preprocess_genotypes",
     "filter_cis_window",
+    "_corr_with_y_streaming"
 ]
 
-def filter_zero_variance(X, snp_ids, threshold=1e-8):
+def filter_zero_variance(X, snp_ids, snp_pos=None, threshold=1e-8):
     """
     Removes SNPs with variance < threshold.
     """
     vars_ = X.var(axis=0)
     keep_idx = cp.where(vars_ > threshold)[0]
-    return X[:, keep_idx], [snp_ids[i] for i in keep_idx.tolist()]
+    X2 = X[:, keep_idx]
+    ids2 = [snp_ids[i] for i in keep_idx.tolist()]
+    pos2 = None if snp_pos is None else [snp_pos[i] for i in keep_idx.tolist()]
+    return X2, ids2, pos2
 
 
 def impute_snps(X, strategy="most_frequent"):
@@ -73,9 +77,9 @@ def run_ld_clumping(X, snp_pos, stat, r2_thresh=0.1, fnc=ld_func):
     return cp.asarray(keep)
 
 
-def preprocess_genotypes(X, snp_ids, snp_pos, y,
-                         var_thresh=1e-8, impute_strategy="most_frequent",
-                         r2_thresh=0.1, fnc=ld_func):
+def preprocess_genotypes(X, snp_ids, snp_pos, y, var_thresh=1e-8,
+                         impute_strategy="most_frequent", r2_thresh=0.1,
+                         batch_size=8192, fnc=ld_func):
     """
     Full preprocessing pipeline:
     1. Zero-variance filter
@@ -83,15 +87,13 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y,
     3. LD clumping with phenotype-informed stats
     """
     # Filter zero variance SNPs
-    X, snp_ids = filter_zero_variance(X, snp_ids, threshold=var_thresh)
-    snp_pos = cp.asarray(snp_pos)[cp.isin(cp.arange(len(snp_pos)),
-                                          cp.asarray([snp_ids.index(i) for i in snp_ids]))]
+    X, snp_ids, snp_pos = filter_zero_variance(X, snp_ids, snp_pos, threshold=var_thresh)
 
     # Impute missing
     X = impute_snps(X, strategy=impute_strategy)
 
     # Association stats (correlation with y)
-    stat = cp.abs(cp.corrcoef(X.T, y)[-1, :-1])
+    stat = _corr_with_y_streaming(X, y, batch_size)
 
     # LD clumping
     keep_idx = run_ld_clumping(X, snp_pos, stat, r2_thresh=r2_thresh, fnc=fnc)
@@ -126,3 +128,20 @@ def filter_cis_window(geno_arr, bim, chrom, pos: int, end: int = None,
     snp_idx = bim.index[mask].to_numpy()
 
     return geno_arr[:, snp_idx], snp_ids, snp_pos
+
+
+def _corr_with_y_streaming(X, y, batch_size: int = 8192, eps: float = 1e-12):
+    X = X.astype(cp.float32, copy=False)  # halve memory
+    y = y.astype(cp.float32, copy=False).ravel()
+
+    y = y - y.mean()
+    y_norm = cp.linalg.norm(y) + eps
+
+    chunks = []
+    for j in range(0, X.shape[1], batch_size):
+        Xi = X[:, j:j+batch_size]
+        Xi = Xi - Xi.mean(axis=0)
+        denom = (cp.linalg.norm(Xi, axis=0) * y_norm + eps)
+        r = (Xi.T @ y) / denom            # Pearson r per SNP
+        chunks.append(cp.abs(r))
+    return cp.concatenate(chunks, axis=0)

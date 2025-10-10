@@ -9,6 +9,8 @@ from multiprocessing import cpu_count
 from sklearn.model_selection import KFold
 from cuml.linear_model import ElasticNet, Ridge
 
+from .snp_processing import _corr_with_y_streaming
+
 __all__ = [
     "boosting_elastic_net",
 ]
@@ -17,7 +19,10 @@ def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500, n_trials=20,
         alphas=(0.1, 1.0), l1_ratios=(0.1, 0.9), subsample_frac=0.7,
         ridge_grid=(1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1, 1, 3, 10),
-        cv=5, refit_each_iter=False, standardize=True
+        cv=5, refit_each_iter=False, standardize=True, val_frac=0.2,
+        random_state=13, early_stop_metric="auto", # "val_r2" | "h2" | "auto"
+        patience=5, min_delta=1e-4, warmup=5, batch_corr_cols=8192,
+        adaptive_trials=True
 ):
     """
     Boosting ElasticNet with final Ridge refit,
@@ -28,90 +33,122 @@ def boosting_elastic_net(
         X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-6)
         y = (y - y.mean()) / (y.std() + 1e-6)
 
+    n = X.shape[0]
+    # Validation split (on GPU indices)
+    use_val = 0.0 < val_frac < 0.9 and n >= 25
+    if use_val:
+        rng = np.random.default_rng(random_state)
+        perm = rng.permutation(n).astype(np.int64)
+        n_val = max(5, int(n * val_frac))
+        val_idx = cp.asarray(perm[:n_val])
+        tr_idx  = cp.asarray(perm[n_val:])
+    else:
+        tr_idx = cp.arange(n)
+        val_idx = None
+
+    # Pick early-stop metric
+    metric_mode = early_stop_metric
+    if metric_mode == "auto":
+        metric_mode = "val_r2" if use_val else "h2"
+
     residuals = y.copy()
-    betas_boosting = cp.zeros(X.shape[1])
-    h2_estimates = []
+    betas_boosting = cp.zeros(X.shape[1], dtype=cp.float32)
+    h2_estimates, val_r2_hist = [], []
 
     # Global hyperparameters (if not tuning each iter)
+    def _tune_params(Xsub, ysub, trials):
+        return _tune_elasticnet_optuna(Xsub, ysub, n_trials=trials, cv=cv,
+                                       max_iter=5000, subsample_frac=subsample_frac,
+                                       alpha_range=alphas, l1_range=l1_ratios)
     if not refit_each_iter:
-        best_params = _tune_elasticnet_optuna(X, y, n_trials=n_trials, cv=cv,
-                                              alpha_range=alphas, l1_range=l1_ratios,
-                                              subsample_frac=subsample_frac)
+        M = int(X.shape[1])
+        trials_eff = _auto_trials(M if not adaptive_trials else min(M, batch_size),
+                                  base_max=n_trials)
+        best_params = _tune_params(X[tr_idx], residuals[tr_idx], trials_eff)
         best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
     else:
-        best_alpha, best_l1 = None, None
+        best_alpha = best_l1 = None
+
+    best_metric = -np.inf
+    bad_steps = 0
 
     for it in range(n_iter):
-        # correlation between residuals and SNPs
-        corrs = cp.corrcoef(X.T, residuals)[-1, :-1]
-        top_idx = cp.argsort(cp.abs(corrs))[-batch_size:]
+        # Fast corr with residuals
+        corrs = _corr_with_y_streaming(X, residuals, batch_size=batch_corr_cols)
+        top_idx = cp.argpartition(cp.abs(corrs), -batch_size)[-batch_size:]
+        top_idx = top_idx[cp.argsort(top_idx)]
 
-        # choose params
+        # Tune per-iter if requested
         if refit_each_iter:
-            best_params = _tune_elasticnet_optuna(X[:, top_idx], residuals,
-                                                  n_trials=n_trials, cv=cv)
-            best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
+            trials_eff = _auto_trials(int(top_idx.size) if adaptive_trials else n_trials,
+                                      base_max=n_trials)
+            bp = _tune_params(X[tr_idx][:, top_idx], residuals[tr_idx], trials_eff)
+            best_alpha, best_l1 = bp["alpha"], bp["l1_ratio"]
 
-        # Fit elastic net
-        model = ElasticNet(alpha=best_alpha, l1_ratio=best_l1, max_iter=5_000)
-        model.fit(X[:, top_idx], residuals)
-        preds = model.predict(X[:, top_idx])
+        # Fit on train, evaluate on val
+        model = ElasticNet(alpha=best_alpha, l1_ratio=best_l1, max_iter=5_000,
+                           fit_intercept=True)
+        model.fit(X[tr_idx][:, top_idx], residuals[tr_idx])
+        preds_tr = model.predict(X[tr_idx][:, top_idx])
+        preds_val = model.predict(X[val_idx][:, top_idx]) if use_val else None
 
 
-        # accumulate betas
-        residuals = residuals - preds
+        # Update residuals and betas
+        residuals = residuals - model.predict(X[:, top_idx])
         betas_boosting[top_idx] += model.coef_
 
-        h2_estimates.append(cp.var(preds).item())
+        # Metrics
+        h2_now = float(cp.var(preds_tr).item())
+        h2_estimates.append(h2_now)
+        val_r2_now = _r2_gpu(y[val_idx], preds_val) if use_val else None
+        if use_val:
+            val_r2_hist.append(val_r2_now)
 
-        # early stopping
-        if it > 10 and np.std(h2_estimates[-5:]) < 1e-4:
-            break
+        # Early stopping logic
+        metric_now = val_r2_now if (metric_mode == "val_r2") else h2_now
+        if it >= warmup:
+            if metric_now > best_metric + min_delta:
+                best_metric = metric_now
+                bad_steps = 0
+            else:
+                bad_steps += 1
+                if bad_steps >= patience:
+                    break
 
-    # Final Ridge refit (manual CV)
+    # Final Ridge refit on kept features
     kept_idx = cp.where(betas_boosting != 0)[0]
-    ridge_betas_full = cp.zeros(X.shape[1])
-    kept_snps = []
-    final_r2 = None
-    ridge_model = None
+    ridge_betas_full = cp.zeros(X.shape[1], dtype=cp.float32)
+    kept_snps, final_r2, ridge_model = [], 0.0, None
 
     if len(kept_idx) > 0:
         ridge_cv = min(3, cv)
         best_ridge = _tune_ridge_optuna(X[:, kept_idx], y, ridge_grid=ridge_grid,
                                         cv=ridge_cv, subsample_frac=subsample_frac)
-        best_ridge_alpha = best_ridge["alpha"]
 
-        ridge_model = Ridge(alpha=best_ridge_alpha)
+        ridge_model = Ridge(alpha=best_ridge["alpha"])
         ridge_model.fit(X[:, kept_idx], y)
-
         preds = ridge_model.predict(X[:, kept_idx])
-        valid_mask = ~cp.isnan(y) & ~cp.isnan(preds)
-        if valid_mask.sum() > 1 and cp.var(preds[valid_mask]) > 0 and cp.var(y[valid_mask]) > 0:
-            r2 = cp.corrcoef(y[valid_mask], preds[valid_mask])[0, 1] ** 2
-            final_r2 = float(r2)
-        else:
-            final_r2 = 0.0
-
-        # Ridge mask for all tested SNPs
+        final_r2 = _r2_gpu(y, preds)
         ridge_betas_full[kept_idx] = ridge_model.coef_
-        kept_snps = [snp_ids[i] for i in kept_idx.tolist()]
+        kept_snps = [snp_ids[i] for i in kept_idx.get().tolist()]
 
     # SNP-based variance explained
     snp_variances = X.var(axis=0)
-    h2_unscaled = float(cp.sum(ridge_betas_full ** 2 * snp_variances))
+    h2_unscaled = float(cp.sum((ridge_betas_full ** 2) * snp_variances))
 
     return {
         "betas_boosting": betas_boosting,
         "h2_estimates": h2_estimates,
+        "val_r2_hist": val_r2_hist,
         "kept_snps": kept_snps,
         "ridge_betas_full": ridge_betas_full,
         "final_r2": final_r2,
         "ridge_model": ridge_model,
-        "snp_ids": snp_ids, # this is the original SNP ids
+        "snp_ids": snp_ids,
         "h2_unscaled": h2_unscaled,
         "snp_variances": snp_variances,
         "best_enet": {"alpha": best_alpha, "l1_ratio": best_l1},
-        "best_ridge": {"alpha": best_ridge["alpha"] if kept_idx.size > 0 else None}
+        "early_stop": {"metric": metric_mode, "best": best_metric, "iters_run": len(h2_estimates)}
     }
 
 
@@ -252,6 +289,23 @@ def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
         mse = cp.mean((preds - y_val) ** 2)
         return mse
     return task()
+
+
+def _r2_gpu(y_true, y_pred):
+    mask = ~cp.isnan(y_true) & ~cp.isnan(y_pred)
+    if mask.sum() < 2:
+        return 0.0
+    yt, yp = y_true[mask], y_pred[mask]
+    vy, vp = cp.var(yt), cp.var(yp)
+    if vy <= 0 or vp <= 0:
+        return 0.0
+    return float(cp.corrcoef(yt, yp)[0, 1] ** 2)
+
+def _auto_trials(M, base_max: int, min_trials: int = 5):
+    # Fewer trials when feature count is small; caps at base_max
+    # e.g., sqrt scaling works well in practice
+    t = int(np.ceil(np.sqrt(max(1, M)) / 2))
+    return max(min_trials, min(base_max, t))
 
 
 ## OLD FUNCTIONS
