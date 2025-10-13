@@ -57,7 +57,7 @@ def run_windows_with_dask(
 
     futures, results = [], []
     for w in windows:
-        if max_in_flight and len(futures) >= max_in_flights:
+        if max_in_flight and len(futures) >= max_in_flight:
             f, r = next(as_completed(futures, with_results=True))
             futures.remove(f)
             if r is not None:
@@ -76,7 +76,7 @@ def run_windows_with_dask(
     for f, r in as_completed(futures, with_results=True):
         if r is not None:
             results.append(r)
-            
+
     client.close(); cluster.close()
 
     df = pd.DataFrame([r for r in results if r is not None])
