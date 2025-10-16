@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
-from .snp_processing import count_snps_in_window
+import itertools as it
 from .vmr_runner import run_single_window
+from .hyperparams import enet_from_targets
+from .snp_processing import count_snps_in_window
 
 __all__ = ["select_tuning_windows", "global_tune_params"]
 
@@ -91,8 +93,8 @@ def global_tune_params(
     # Default grid: |grid| * |tuning_windows|
     if grid is None:
         grid = {
-            "l1_ratio": [0.2, 0.35, 0.5],
             "c_lambda": [0.7, 1.0, 1.4],
+            "c_ridge": [0.5, 1.0, 2.0],
             "subsample_frac": [0.5, 0.7, 0.9],
             "batch_size": [2048, 4096, 8192],
         }
@@ -100,14 +102,29 @@ def global_tune_params(
         early_stop = {"patience": 5, "min_delta": 1e-4, "min_rel_gain": 1e-3}
 
     # build param combos
-    import itertools as it
-    combos = list(it.product(grid["l1_ratio"], grid["c_lambda"], grid["subsample_frac"], grid["batch_size"]))
+    N = _infer_N_global(fam=fam, geno_arr=geno_arr, tuning_windows=tuning_windows)
+    if N < 2:
+        raise ValueError("Could not infer a valid sample size, N, for tuning.")
+    
+    combos = list(it.product(
+        grid["c_lambda"], grid["c_ridge"], grid["subsample_frac"], grid["batch_size"], 
+    ))
 
-    best = None; best_score = -np.inf
-    for (l1r, c, sub, bs) in combos:
+    best, best_score = None, -np.inf
+    for (c_lam, c_ridge, sub, bs) in combos:
         scores = []
         for w in tuning_windows:
             # Lightweight call: n_trials=1, rely on early stopping
+            M = int(w.get("M_raw") or count_snps_in_window(
+                bim, w["chrom"], w["start"], w.get("end", w["start"]),
+                window_size=window_size, use_window=use_window
+            ))
+            if M <= 1:
+                continue
+
+            # Calculate fixed alpha using lasso scaling
+            alpha, l1r = enet_from_targets(M, N, c_lambda=c_lam, c_ridge=c_ridge)
+            
             res = run_single_window(
                 chrom=w["chrom"], start=w["start"], end=w.get("end", w["start"]),
                 geno_arr=geno_arr, bim=bim, fam=fam,
@@ -117,10 +134,9 @@ def global_tune_params(
                 error_regions=error_regions, outdir=outdir,
                 window_size=window_size, by_hand=by_hand,
                 n_trials=1, n_iter=100, use_window=use_window,
-                batch_size=min(bs, w.get("M_raw", bs)),  # safe cap
-                # ↓ Your boosting_elastic_net must accept fixed hyperparams. If you pass via kwargs:
-                # alpha=c * np.sqrt(2*np.log(M)/N) inside run_single_window (compute there),
-                # l1_ratio=l1r, subsample_frac=sub, early_stop=early_stop
+                batch_size=min(bs, M), fixed_alpha=alpha,
+                fixed_l1_ratio=l1r, fixed_subsample=sub,
+                early_stop=early_stop, save_full=False
             )
             if res is not None and np.isfinite(res.get("final_r2", np.nan)):
                 scores.append(float(res["final_r2"]))
@@ -134,3 +150,31 @@ def global_tune_params(
         raise RuntimeError("Global tuning failed to evaluate any window.")
     best["score"] = best_score
     return best
+
+
+def _infer_N_global(fam=None, geno_arr=None, tuning_windows=None):
+    """
+    Try to infer N (number of individuals) once:
+      1) len(fam) if provided
+      2) geno_arr.shape[0] if provided
+      3) first window's 'pheno' length if available (fallback)
+    """
+    if fam is not None:
+        try:
+            return int(len(fam))
+        except Exception:
+            pass
+    if geno_arr is not None:
+        try:
+            return int(getattr(geno_arr, "shape", [0])[0])
+        except Exception:
+            pass
+    if tuning_windows:
+        for w in tuning_windows:
+            p = w.get("pheno", None)
+            if p is not None:
+                try:
+                    return int(getattr(p, "shape", [0])[0])
+                except Exception:
+                    continue
+    return 0
