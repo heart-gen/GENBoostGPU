@@ -17,7 +17,9 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
                       geno_arr=None, bim=None, fam=None, geno_path=None, pheno=None,
                       pheno_path=None, pheno_id=None, batch_size=8192,
                       error_regions=None, outdir="results", window_size=500_000,
-                      by_hand=False, n_trials=20, n_iter=100, use_window=True):
+                      by_hand=False, n_trials=20, n_iter=100, use_window=True,
+                      fixed_l1_ratio=None, fixed_c_lambda=None, fixed_subsample=None,
+                      early_stop=None, working_set=None, save_full=True):
     """
     Run boosting elastic net for one genomic window.
 
@@ -58,9 +60,10 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
             return None
 
     # Filter cis window
-    X, snps, snp_pos = filter_cis_window(geno_arr, bim, chrom, start, end,
-                                         window_size=window_size,
-                                         use_window=use_window)
+    X, snps, snp_pos = filter_cis_window(
+        geno_arr, bim, chrom, start, end,
+        window_size=window_size, use_window=use_window
+    )
     if X is None or len(snps) == 0:
         return None
 
@@ -76,27 +79,45 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         X = X[:, keep_idx]
         snps = [snps[i] for i in keep_idx.tolist()]
     else:
-        X, snps = preprocess_genotypes(X, snps, snp_pos, y, r2_thresh=0.2,
-                                       batch_size=batch_size)
+        X, snps = preprocess_genotypes(
+            X, snps, snp_pos, y, r2_thresh=0.2, batch_size=batch_size
+        )
+    
+    N, M = X.shape
+    # Use fixed alpha if global c_lambda
+    fixed_alpha = None
+    if fixed_c_lambda is not None:
+        M_eff = max(int(M), 2)
+        N_eff = max(int(N), 2)
+        fixed_alpha = float(fixed_c_lambda) * float((2.0 + np.log(M_eff) / N_eff) ** 0.5)
 
+    enet_kwargs = {}
+    local_n_trials = 1 if (fixed_alpha is not None or fixed_l1_ratio is not None or fixed_subsample is not None) else n_trials
     # Run boosting EN
     results = boosting_elastic_net(
-        X, y, snps, n_iter=n_iter, n_trials=n_trials,
-        batch_size=min(1000, X.shape[1])
+        X, y, snps, n_iter=n_iter, 
+        n_trials=local_n_trials,
+        batch_size=min(int(batch_size), M),
+        **enet_kwargs
     )
 
     # Save + return
-    Path(outdir).mkdir(parents=True, exist_ok=True)
-    out_prefix = Path(outdir) / f"{pheno_id}_chr{chrom}_{start}_{end}"
-    save_results(results["ridge_betas_full"],
-                 results["h2_estimates"], str(out_prefix),
-                 snp_ids=results["snp_ids"])
+    if save_full:
+        Path(outdir).mkdir(parents=True, exist_ok=True)
+        out_prefix = Path(outdir) / f"{pheno_id}_chr{chrom}_{start}_{end}"
+        save_results(
+            results["ridge_betas_full"],
+            results["h2_estimates"], 
+            str(out_prefix),
+            snp_ids=results["snp_ids"]
+        )
 
     return {
         "chrom": chrom,
         "start": start,
         "end": end,
-        "num_snps": X.shape[1],
+        "num_snps": M,
+        "N": N,
         "final_r2": results["final_r2"],
         "h2_unscaled": results["h2_unscaled"],
         "n_iter": len(results["h2_estimates"]),
