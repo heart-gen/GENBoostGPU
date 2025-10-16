@@ -102,32 +102,59 @@ def preprocess_genotypes(X, snp_ids, snp_pos, y, var_thresh=1e-8,
     return X[:, keep_idx], [snp_ids[i] for i in keep_idx.tolist()]
 
 
+def index_cis_window(bim, chrom, pos: int, end: int = None,
+                     window_size: int = 20_000, use_window: bool = False):
+    """
+    Return indices/ids/positions for SNPs within a cis-window.
+    """
+    if not use_window:
+        window_size = 0
+    start = pos - window_size
+    if end is None:
+        end = pos
+    end = end + window_size
+
+    # Select SNP window
+    m = (bim.chrom.astype(str) == str(chrom)) & \
+        (bim.pos >= start) & (bim.pos <= end)
+
+    if not m.any():
+        return [], [], []
+
+    # Grab index positions (zero-based relative to bim)
+    try:
+        # cuDF
+        idx = bim.index[m].to_numpy()
+        snp_ids = bim.loc[m, "snp"].to_pandas().tolist() if hasattr(bim, "to_pandas") else bim.loc[m, "snp"].tolist()
+        snp_pos = bim.loc[m, "pos"].to_pandas().tolist() if hasattr(bim, "to_pandas") else bim.loc[m, "pos"].tolist()
+    except Exception:
+        # pandas fallback
+        idx = bim.index[m].to_numpy()
+        snp_ids = bim.loc[m, "snp"].tolist()
+        snp_pos = bim.loc[m, "pos"].tolist()
+    return idx, snp_ids, snp_pos
+
+
 def filter_cis_window(geno_arr, bim, chrom, pos: int, end: int = None,
                       window_size: int = 20_000, use_window: bool = False):
     """
     Select SNPs within a cis-window around a CpG/phenotype position.
     """
-    # define cis window boundaries
-    if not use_window:
-        window_size = 0
-    
-    start = pos - window_size
-    if end is None:
-        end = pos
-    end   = end + window_size
+    # Index SNP window
+    idx, snp_ids, snp_pos = index_cis_window(bim, chrom, pos, end, 
+                                             window_size, use_window)
 
-    # select SNPs in window
-    mask = (bim.chrom.astype(str) == str(chrom)) & \
-        (bim.pos >= start) & (bim.pos <= end)
-
-    if not mask.any():
+    if not idx:
         return None, [], []
 
-    snp_ids = bim.loc[mask, "snp"].tolist()
-    snp_pos = bim.loc[mask, "pos"].tolist()
-    snp_idx = bim.index[mask].to_numpy()
+    return geno_arr[:, idx], snp_ids, snp_pos
 
-    return geno_arr[:, snp_idx], snp_ids, snp_pos
+
+def count_snps_in_window(bim, chrom, pos: int, end: int = None,
+                         window_size: int = 20_000, use_window: bool = False) -> int:
+    """Fast count for stratified sampling—no genotype access."""
+    idx, _, _ = index_cis_window(bim, chrom, pos, end, window_size, use_window)
+    return int(len(idx))
 
 
 def _corr_with_y_streaming(X, y, batch_size: int = 8192, eps: float = 1e-12):
