@@ -12,7 +12,7 @@ __all__ = [
     "run_boosting_for_cpg_delayed",
 ]
 
-def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
+def prepare_cpg_inputs(cpg_list, , pheno_df, bim,
                        window_size=20_000, var_thresh=1e-6,
                        impute_strategy="most_frequent",
                        r2_thresh=0.1):
@@ -26,14 +26,14 @@ def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
         y = pheno_df[cpg_id].to_cupy()
 
         # Extract cis SNPs
-        geno_arr, snp_ids, snp_pos = filter_cis_window(geno_arr, bim,
-                                                       chrom, cpg_pos,
-                                                       window_size)
-        if geno_arr is None or len(snp_ids) == 0:
+        X_win, snp_ids, snp_pos = filter_cis_window(
+            geno_arr, bim, chrom, cpg_pos, window_size=window_size, use_window=True
+        )
+        if X_win is None or len(snp_ids) == 0:
             continue
 
         # Filter zero-variance SNPs
-        X, snp_ids = preprocess_genotypes(geno_arr, snp_ids, snp_pos, y,
+        X, snp_ids = preprocess_genotypes(X_win, snp_ids, snp_pos, y,
                                           var_thresh=var_thresh,
                                           impute_strategy=impute_strategy,
                                           r2_thresh=r2_thresh)
@@ -73,7 +73,7 @@ def run_boosting_for_cpgs(inputs, n_iter=50, batch_size=500,
             X, y, snp_ids,
             n_iter=n_iter, batch_size=batch_size,
             alphas=alphas, l1_ratios=l1_ratios,
-            ridge_alphas=ridge_alphas, cv=cv,
+            ridge_grid=ridge_alphas, cv=cv,
             refit_each_iter=refit_each_iter,
             standardize=standardize
         )
@@ -101,14 +101,14 @@ def run_boosting_for_cpg_delayed(cpg_id, X, y, snp_ids,
     betas_path = os.path.join(outdir, f"{cpg_id}_betas.tsv")
 
     if not overwrite and os.path.exists(summary_path):
-        return delayed(lambda x: x)(summary_path)
+        return summary_path
 
     # Run boosting model
     res = boosting_elastic_net(
         X, y, snp_ids,
         n_iter=n_iter, batch_size=batch_size,
         alphas=alphas, l1_ratios=l1_ratios,
-        ridge_alphas=ridge_alphas, cv=cv,
+        ridge_grid=ridge_alphas, cv=cv,
         refit_each_iter=refit_each_iter,
         standardize=standardize
     )
@@ -128,7 +128,8 @@ def run_boosting_for_cpg_delayed(cpg_id, X, y, snp_ids,
 
     # Save betas if requested
     if save_full_betas:
-        kept_idx = list(range(len(res["snp_ids"])))
+        keep = set(res["kept_snps"])
+        kept_idx = [i for i, sid in enumerate(res["snp_ids"]) if sid in keep]
 
         betas_df = pd.DataFrame({
             "snp_id": res["snp_ids"], # only retained
