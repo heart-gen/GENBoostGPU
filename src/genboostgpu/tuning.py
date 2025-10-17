@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 import itertools as it
@@ -177,4 +178,5 @@ def _infer_N_global(fam=None, geno_arr=None, tuning_windows=None):
                     return int(getattr(p, "shape", [0])[0])
                 except Exception:
                     continue
+    warnings.warn("Unable to infer sample size N from any source.")
     return 0
