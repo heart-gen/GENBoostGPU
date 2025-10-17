@@ -22,7 +22,8 @@ def boosting_elastic_net(
         cv=5, refit_each_iter=False, standardize=True, val_frac=0.2,
         random_state=13, early_stop_metric="auto", # "val_r2" | "h2" | "auto"
         patience=5, min_delta=1e-4, warmup=5, batch_corr_cols=8192,
-        adaptive_trials=True
+        adaptive_trials=True, fixed_alpha=None, fixed_l1_ratio=None, 
+        fixed_subsample_frac=None
 ):
     """
     Boosting ElasticNet with final Ridge refit,
@@ -55,19 +56,43 @@ def boosting_elastic_net(
     betas_boosting = cp.zeros(X.shape[1], dtype=cp.float32)
     h2_estimates, val_r2_hist = [], []
 
+    # Effective subsample
+    subsample_eff = float(fixed_subsample_frac) if fixed_subsample_frac is not None else float(subsample_frac)
+
     # Global hyperparameters (if not tuning each iter)
-    def _tune_params(Xsub, ysub, trials):
-        return _tune_elasticnet_optuna(Xsub, ysub, n_trials=trials, cv=cv,
-                                       max_iter=5000, subsample_frac=subsample_frac,
-                                       alpha_range=alphas, l1_range=l1_ratios)
+    def _tune_params(Xsub, ysub, trials, alpha_rng, l1_rng, fixed_a=None, fixed_l1=None):
+        if fixed_a is not None and fixed_l1 is not None:
+            return {"alpha": float(fixed_a), "l1_ratio": float(fixed_l1)}
+        if fixed_a is not None:
+            return _tune_elasticnet_optuna(
+                Xsub, ysub, n_trials=max(3, trials), cv=cv, max_iter=5000, 
+                subsample_frac=subsample_eff, alpha_range=(fixed_a, fixed_a),
+                l1_range=l1_rng
+            )
+        if fixed_l1 is not None:
+            return _tune_elasticnet_optuna(
+                Xsub, ysub, n_trials=max(3, trials), cv=cv, max_iter=5000, 
+                subsample_frac=subsample_eff, alpha_range=alpha_rng,
+                l1_range=(fixed_l1, fixed_l1)
+            )
+        return _tune_elasticnet_optuna(
+            Xsub, ysub, n_trials=trials, cv=cv, max_iter=5000, 
+            subsample_frac=subsample_eff, alpha_range=alpha_rng, l1_range=l1_rng
+        )
+    M = int(X.shape[1])
+    trials_base = _auto_trials(M if not adaptive_trials else min(M, batch_size),
+                               base_max=n_trials)
+    alpha_rng = alphas
+    l1_rng    = l1_ratios
+
     if not refit_each_iter:
-        M = int(X.shape[1])
-        trials_eff = _auto_trials(M if not adaptive_trials else min(M, batch_size),
-                                  base_max=n_trials)
-        best_params = _tune_params(X[tr_idx], residuals[tr_idx], trials_eff)
+        best_params = _tune_params(X[tr_idx], residuals[tr_idx], trials_base,
+                                  alpha_rng, l1_rng, fixed_a=fixed_alpha,
+                                  fixed_l1=fixed_l1_ratio)
         best_alpha, best_l1 = best_params["alpha"], best_params["l1_ratio"]
     else:
-        best_alpha = best_l1 = None
+        best_alpha = fixed_alpha
+        best_l1    = fixed_l1_ratio
 
     best_metric = -np.inf
     bad_steps = 0
@@ -82,7 +107,8 @@ def boosting_elastic_net(
         if refit_each_iter:
             trials_eff = _auto_trials(int(top_idx.size) if adaptive_trials else n_trials,
                                       base_max=n_trials)
-            bp = _tune_params(X[tr_idx][:, top_idx], residuals[tr_idx], trials_eff)
+            bp = _tune_params(X[tr_idx][:, top_idx], residuals[tr_idx], trials_eff,
+                              alpha_rng, l1_rng, fixed_a=fixed_alpha, fixed_l1=fixed_l1_ratio)
             best_alpha, best_l1 = bp["alpha"], bp["l1_ratio"]
 
         # Fit on train, evaluate on val
