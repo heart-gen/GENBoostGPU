@@ -1,8 +1,6 @@
-import cudf
 import optuna
 import cupy as cp
 import numpy as np
-import pandas as pd
 from itertools import product
 from dask import delayed, compute
 from multiprocessing import cpu_count
@@ -113,7 +111,7 @@ def boosting_elastic_net(
         if (cached_top_idx is None) or (it % refresh == 0):
             # Fast corr with residuals
             corrs = _corr_with_y_streaming(X, residuals, batch_size=batch_corr_cols)
-            top_idx = cp.argpartition(cp.abs(corrs), -batch_size)[-batch_size:]
+            top_idx = cp.argpartition(cp.abs(corrs), -K)[-K:]
             top_idx = top_idx[cp.argsort(top_idx)]
             cached_top_idx = top_idx
         else:
@@ -165,7 +163,7 @@ def boosting_elastic_net(
     if len(kept_idx) > 0:
         ridge_cv = min(3, cv)
         best_ridge = _tune_ridge_optuna(X[:, kept_idx], y, ridge_grid=ridge_grid,
-                                        cv=ridge_cv, subsample_frac=subsample_frac)
+                                        cv=ridge_cv, subsample_frac=subsample_eff)
 
         ridge_model = Ridge(alpha=best_ridge["alpha"])
         ridge_model.fit(X[:, kept_idx], y)
@@ -190,6 +188,7 @@ def boosting_elastic_net(
         "h2_unscaled": h2_unscaled,
         "snp_variances": snp_variances,
         "best_enet": {"alpha": best_alpha, "l1_ratio": best_l1},
+        "best_ridge": {"alpha": best_ridge_alpha},
         "early_stop": {"metric": metric_mode, "best": best_metric, "iters_run": len(h2_estimates)}
     }
 
@@ -270,7 +269,8 @@ def _tune_ridge_optuna(X, y, cv=5, subsample_frac=0.7,
             tasks.append(_fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha))
 
         mses = compute(*tasks)
-        return cp.mean(cp.asarray(mses)).item()
+        mses = [float(m.item() if hasattr(m, "item") else m) for m in mses]
+        return float(np.mean(mses))
 
     study = optuna.create_study(direction="minimize")
     n_trials = len(ridge_grid)
