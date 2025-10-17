@@ -90,8 +90,13 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
     if fixed_alpha is not None:       enet_kwargs["fixed_alpha"] = float(fixed_alpha)
     if fixed_l1_ratio is not None:    enet_kwargs["fixed_l1_ratio"] = float(fixed_l1_ratio)
     if fixed_subsample is not None:   enet_kwargs["fixed_subsample_frac"] = float(fixed_subsample)
-    if early_stop is not None:        enet_kwargs["early_stop"] = early_stop
     if working_set is not None:       enet_kwargs["working_set"] = working_set
+
+    if early_stop is not None:
+        if "patience"    in early_stop: enet_kwargs["patience"]    = int(early_stop["patience"])
+        if "min_delta"   in early_stop: enet_kwargs["min_delta"]   = float(early_stop["min_delta"])
+        if "warmup"      in early_stop: enet_kwargs["warmup"]      = int(early_stop["warmup"])
+        if "metric"      in early_stop: enet_kwargs["early_stop_metric"] = str(early_stop["metric"])
 
     # Run boosting EN
     results = boosting_elastic_net(
