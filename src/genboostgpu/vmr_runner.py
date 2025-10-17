@@ -18,7 +18,7 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
                       pheno_path=None, pheno_id=None, batch_size=8192,
                       error_regions=None, outdir="results", window_size=500_000,
                       by_hand=False, n_trials=20, n_iter=100, use_window=True,
-                      fixed_l1_ratio=None, fixed_c_lambda=None, fixed_subsample=None,
+                      fixed_alpha=None, fixed_l1_ratio=None, fixed_subsample=None,
                       early_stop=None, working_set=None, save_full=True):
     """
     Run boosting elastic net for one genomic window.
@@ -43,10 +43,7 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         df = load_phenotypes(str(pheno_path), header=has_header)
         if pheno_id is None:
             raise ValueError("pheno_id required if using pheno_path")
-        if y_pos is not None:
-            pheno = df.iloc[:, y_pos].to_cupy()
-        else:
-            pheno = df[pheno_id].to_cupy()
+        pheno = (df.iloc[:, y_pos].to_cupy() if y_pos is not None else df[pheno_id].to_cupy())
 
     y = (pheno - pheno.mean()) / (pheno.std() + 1e-6)
 
@@ -84,18 +81,21 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         )
     
     N, M = X.shape
-    # Use fixed alpha if global c_lambda
-    fixed_alpha = None
-    if fixed_c_lambda is not None:
-        M_eff = max(int(M), 2)
-        N_eff = max(int(N), 2)
-        fixed_alpha = float(fixed_c_lambda) * float((2.0 + np.log(M_eff) / N_eff) ** 0.5)
+    # Use fixed hyperparameters if provided
+    use_fixed = (fixed_alpha is not None) or (fixed_l1_ratio is not None) or (fixed_subsample is not None)
+    local_n_trials = 1 if use_fixed else n_trials
 
+    # Booster kwargs (only include keys that are set)
     enet_kwargs = {}
-    local_n_trials = 1 if (fixed_alpha is not None or fixed_l1_ratio is not None or fixed_subsample is not None) else n_trials
+    if fixed_alpha is not None:       enet_kwargs["fixed_alpha"] = float(fixed_alpha)
+    if fixed_l1_ratio is not None:    enet_kwargs["fixed_l1_ratio"] = float(fixed_l1_ratio)
+    if fixed_subsample is not None:   enet_kwargs["fixed_subsample_frac"] = float(fixed_subsample)
+    if early_stop is not None:        enet_kwargs["early_stop"] = early_stop
+    if working_set is not None:       enet_kwargs["working_set"] = working_set
+
     # Run boosting EN
     results = boosting_elastic_net(
-        X, y, snps, n_iter=n_iter, 
+        X, y, snp_ids=snps, n_iter=n_iter, 
         n_trials=local_n_trials,
         batch_size=min(int(batch_size), M),
         **enet_kwargs
@@ -106,19 +106,13 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         Path(outdir).mkdir(parents=True, exist_ok=True)
         out_prefix = Path(outdir) / f"{pheno_id}_chr{chrom}_{start}_{end}"
         save_results(
-            results["ridge_betas_full"],
-            results["h2_estimates"], 
-            str(out_prefix),
-            snp_ids=results["snp_ids"]
+            results["ridge_betas_full"], results["h2_estimates"], 
+            str(out_prefix), snp_ids=results["snp_ids"]
         )
 
     return {
-        "chrom": chrom,
-        "start": start,
-        "end": end,
-        "num_snps": M,
-        "N": N,
-        "final_r2": results["final_r2"],
-        "h2_unscaled": results["h2_unscaled"],
-        "n_iter": len(results["h2_estimates"]),
+        "chrom": chrom, "start": start, "end": end, "num_snps": M,
+        "N": N, "final_r2": results.get("final_r2"),
+        "h2_unscaled": results.get("h2_unscaled"),
+        "n_iter": len(results.get("h2_estimates", [])),
     }
