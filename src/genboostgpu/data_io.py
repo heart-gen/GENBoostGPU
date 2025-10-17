@@ -33,7 +33,7 @@ def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None):
     """
     Save betas and h2 estimates to disk.
     """
-    betas_np = cp.asnumpy(betas)
+    betas_np = cp.asnumpy(betas).ravel()
 
     betas_df = pd.DataFrame({
         "snp": snp_ids if snp_ids is not None else range(len(betas_np)),
