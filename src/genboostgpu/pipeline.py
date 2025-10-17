@@ -128,7 +128,7 @@ def run_boosting_for_cpg_delayed(cpg_id, X, y, snp_ids,
 
     # Save betas if requested
     if save_full_betas:
-        kept_idx = [i for i, snp in enumerate(res["snp_ids"])]
+        kept_idx = list(range(len(res["snp_ids"])))
 
         betas_df = pd.DataFrame({
             "snp_id": res["snp_ids"], # only retained
