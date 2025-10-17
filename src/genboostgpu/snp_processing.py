@@ -118,7 +118,7 @@ def index_cis_window(bim, chrom, pos: int, end: int = None,
     m = (bim.chrom.astype(str) == str(chrom)) & \
         (bim.pos >= start) & (bim.pos <= end)
 
-    if not m.any():
+    if m.sum() == 0:
         return [], [], []
 
     # Grab index positions (zero-based relative to bim)
@@ -144,7 +144,7 @@ def filter_cis_window(geno_arr, bim, chrom, pos: int, end: int = None,
     idx, snp_ids, snp_pos = index_cis_window(bim, chrom, pos, end, 
                                              window_size, use_window)
 
-    if not idx:
+    if len(idx) == 0:
         return None, [], []
 
     return geno_arr[:, idx], snp_ids, snp_pos
