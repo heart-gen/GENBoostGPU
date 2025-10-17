@@ -145,7 +145,12 @@ def global_tune_params(
             score = float(np.nanmedian(scores))  # robust across windows
             if score > best_score:
                 best_score = score
-                best = dict(l1_ratio=l1r, c_lambda=c, subsample_frac=sub, batch_size=bs)
+                best = dict(
+                    c_lambda=float(c_lam), 
+                    c_ridge=float(c_ridge),
+                    subsample_frac=float(sub), 
+                    batch_size=int(bs)
+                )
 
     if best is None:
         raise RuntimeError("Global tuning failed to evaluate any window.")
