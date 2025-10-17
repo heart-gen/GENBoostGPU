@@ -22,8 +22,8 @@ def boosting_elastic_net(
         cv=5, refit_each_iter=False, standardize=True, val_frac=0.2,
         random_state=13, early_stop_metric="auto", # "val_r2" | "h2" | "auto"
         patience=5, min_delta=1e-4, warmup=5, batch_corr_cols=8192,
-        adaptive_trials=True, fixed_alpha=None, fixed_l1_ratio=None, 
-        fixed_subsample_frac=None
+        adaptive_trials=True, working_set=None, fixed_alpha=None, 
+        fixed_l1_ratio=None, fixed_subsample_frac=None
 ):
     """
     Boosting ElasticNet with final Ridge refit,
@@ -46,6 +46,17 @@ def boosting_elastic_net(
     else:
         tr_idx = cp.arange(n)
         val_idx = None
+
+    # Initialize working-set
+    if working_set is None:
+        K = int(batch_size)
+        refresh = 1
+    else:
+        K = int(working_set.get("K", batch_size))
+        refresh = int(working_set.get("refresh", 10))
+    K = max(1, min(K, X.shape[1]))
+    refresh = max(1, refresh)
+    cached_top_idx = None
 
     # Pick early-stop metric
     metric_mode = early_stop_metric
@@ -98,10 +109,15 @@ def boosting_elastic_net(
     bad_steps = 0
 
     for it in range(n_iter):
-        # Fast corr with residuals
-        corrs = _corr_with_y_streaming(X, residuals, batch_size=batch_corr_cols)
-        top_idx = cp.argpartition(cp.abs(corrs), -batch_size)[-batch_size:]
-        top_idx = top_idx[cp.argsort(top_idx)]
+        # Refresh working set every `refresh` iterations
+        if (cached_top_idx is None) or (it % refresh == 0):
+            # Fast corr with residuals
+            corrs = _corr_with_y_streaming(X, residuals, batch_size=batch_corr_cols)
+            top_idx = cp.argpartition(cp.abs(corrs), -batch_size)[-batch_size:]
+            top_idx = top_idx[cp.argsort(top_idx)]
+            cached_top_idx = top_idx
+        else:
+            top_idx = cached_top_idx
 
         # Tune per-iter if requested
         if refit_each_iter:
@@ -115,15 +131,15 @@ def boosting_elastic_net(
         model = ElasticNet(alpha=best_alpha, l1_ratio=best_l1, max_iter=5_000,
                            fit_intercept=True)
         model.fit(X[tr_idx][:, top_idx], residuals[tr_idx])
-        preds_tr = model.predict(X[tr_idx][:, top_idx])
-        preds_val = model.predict(X[val_idx][:, top_idx]) if use_val else None
-
 
         # Update residuals and betas
         residuals = residuals - model.predict(X[:, top_idx])
         betas_boosting[top_idx] += model.coef_
 
         # Metrics
+        preds_tr = model.predict(X[tr_idx][:, top_idx])
+        preds_val = model.predict(X[val_idx][:, top_idx]) if use_val else None
+
         h2_now = float(cp.var(preds_tr).item())
         h2_estimates.append(h2_now)
         val_r2_now = _r2_gpu(y[val_idx], preds_val) if use_val else None
@@ -327,12 +343,12 @@ def _r2_gpu(y_true, y_pred):
         return 0.0
     return float(cp.corrcoef(yt, yp)[0, 1] ** 2)
 
+
 def _auto_trials(M, base_max: int, min_trials: int = 5):
     # Fewer trials when feature count is small; caps at base_max
     # e.g., sqrt scaling works well in practice
     t = int(np.ceil(np.sqrt(max(1, M)) / 2))
     return max(min_trials, min(base_max, t))
-
 
 ## OLD FUNCTIONS
 def _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
