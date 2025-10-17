@@ -122,12 +122,14 @@ def index_cis_window(bim, chrom, pos: int, end: int = None,
         return [], [], []
 
     # Grab index positions (zero-based relative to bim)
-    try:
+    is_cudf = hasattr(bim, "to_pandas")
+    if is_cudf:
         # cuDF
-        idx = bim.index[m].to_numpy()
-        snp_ids = bim.loc[m, "snp"].to_pandas().tolist() if hasattr(bim, "to_pandas") else bim.loc[m, "snp"].tolist()
-        snp_pos = bim.loc[m, "pos"].to_pandas().tolist() if hasattr(bim, "to_pandas") else bim.loc[m, "pos"].tolist()
-    except Exception:
+        sub = bim.loc[m]
+        idx = sub.index.to_pandas().to_numpy()
+        snp_ids = sub["snp"].to_pandas().tolist()
+        snp_pos = sub["pos"].to_pandas().tolist()
+    else:
         # pandas fallback
         idx = bim.index[m].to_numpy()
         snp_ids = bim.loc[m, "snp"].tolist()
@@ -144,7 +146,7 @@ def filter_cis_window(geno_arr, bim, chrom, pos: int, end: int = None,
     idx, snp_ids, snp_pos = index_cis_window(bim, chrom, pos, end, 
                                              window_size, use_window)
 
-    if len(idx) == 0:
+    if idx is None or len(idx) == 0:
         return None, [], []
 
     return geno_arr[:, idx], snp_ids, snp_pos
