@@ -16,7 +16,6 @@ def select_tuning_windows(
     Select a stratified subset of windows for global hyperparameter tuning.
     """
     rng = np.random.default_rng(seed)
-    # Optional exclusion set
     excl = set(exclude_failed or [])
 
     # Compute SNP counts per window
@@ -30,7 +29,7 @@ def select_tuning_windows(
             window_size=window_size, use_window=use_window
         )
         if M_raw > 0:
-            rows.append({**w, "M_raw": M_raw})
+            rows.append({**w, "M_raw": int(M_raw)})
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -45,12 +44,12 @@ def select_tuning_windows(
     if bins > 1:
         df["bin"] = pd.qcut(df["M_raw"], q=bins, duplicates="drop")
     else:
-        df["bin"] = "all"
+        df["bin"] = pd.Series(["all"] * len(df), dtype="category")
 
     # Optional: ensure some chrom diversity
     picked_idx = []
     if per_chrom_min > 0:
-        for ch, dch in df.groupby("chrom"):
+        for _, dch in df.groupby("chrom"):
             k = min(per_chrom_min, len(dch))
             if k > 0:
                 picked_idx.extend(dch.sample(n=k, random_state=seed).index.tolist())
@@ -60,15 +59,14 @@ def select_tuning_windows(
     # Allocate evenly
     need = max(0, target - len(picked_idx))
     if need > 0:
-        bin_groups = remaining.groupby("bin")
-        B = max(1, len(bin_groups))
+        groups = list(remaining.groupby("bin", observed=True))
+        B = max(1, len(groups))
         base = need // B
         extra = need % B
 
         # Order bins
-        ordered_bins = [b for b, _ in sorted(bin_groups, key=lambda x: str(x[0]))]
-        for i, b in enumerate(ordered_bins):
-            g = bin_groups.get_group(b)
+        ordered_bins = sorted(groups, key=lambda t: str(t[0]))
+        for i, (_, g) in enumerate(ordered_bins):
             take = min(len(g), base + (1 if i < extra else 0))
             if take > 0:
                 picked_idx.extend(g.sample(n=take, random_state=seed).index.tolist())
@@ -79,7 +77,11 @@ def select_tuning_windows(
         fill = df.drop(index=sel.index).sort_values("M_raw", ascending=False).head(short)
         sel = pd.concat([sel, fill], axis=0).drop_duplicates()
 
-    return sel.drop(columns=["bin"] if "bin" in sel.columns else []).to_dict(orient="records")
+    # Drop the helper column if present
+    if "bin" in sel.columns:
+        sel = sel.drop(columns=["bin"])
+
+    return sel.to_dict(orient="records")
 
 
 def global_tune_params(
