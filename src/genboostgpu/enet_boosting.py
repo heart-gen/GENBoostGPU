@@ -188,7 +188,6 @@ def boosting_elastic_net(
         "h2_unscaled": h2_unscaled,
         "snp_variances": snp_variances,
         "best_enet": {"alpha": best_alpha, "l1_ratio": best_l1},
-        "best_ridge": {"alpha": best_ridge["alpha"]},
         "early_stop": {"metric": metric_mode, "best": best_metric, "iters_run": len(h2_estimates)}
     }
 
