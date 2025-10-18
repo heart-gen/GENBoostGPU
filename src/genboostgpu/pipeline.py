@@ -12,7 +12,7 @@ __all__ = [
     "run_boosting_for_cpg_delayed",
 ]
 
-def prepare_cpg_inputs(cpg_list, , pheno_df, bim,
+def prepare_cpg_inputs(cpg_list, geno_arr, pheno_df, bim,
                        window_size=20_000, var_thresh=1e-6,
                        impute_strategy="most_frequent",
                        r2_thresh=0.1):
