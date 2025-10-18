@@ -29,27 +29,45 @@ def load_genotypes(plink_prefix, dtype="float32"):
     return cp.asarray(geno).T, bim, fam
 
 
-def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None):
+def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None, 
+                 zero_tol: float = 0.0):
     """
-    Save betas and h2 estimates to disk.
+    Save only non-zero betas (|beta| > zero_tol) and all h2 estimates to disk.
     """
     betas_np = cp.asnumpy(betas).ravel()
 
+    # Mask non-zero betas (with tolerance)
+    nz_mask = (np.abs(betas_np) > float(zero_tol))
+    nz_idx = np.nonzero(nz_mask)[0]
+
+    # SNP IDs aligned to mask
+    if snp_ids is None:
+        snp_ids_arr = np.arange(betas_np.size)
+    else:
+        snp_ids_arr = np.asarray(snp_ids)
+
     betas_df = pd.DataFrame({
-        "snp": snp_ids if snp_ids is not None else range(len(betas_np)),
-        "beta": betas_np
+        "snp": snp_id_arr[nz_mask],
+        "beta": betas_np[nz_mask],
     })
+
+    # h2 estimates
+    try:
+        h2_np = cp.asnumpy(h2_estimates)
+    except Exception:
+        h2_np = np.asarray(h2_estimates)
 
     h2_df = pd.DataFrame({
-        "iteration": range(len(h2_estimates)),
-        "h2": h2_estimates
+        "iteration": np.arange(h2_np.size),
+        "h2": h2_np,
     })
 
+    # Add metadata if provided
     if meta:
         for k, v in meta.items():
             betas_df[k] = v
             h2_df[k] = v
 
-    # per-VMR outputs
+    # Write TSVs
     betas_df.to_csv(f"{out_prefix}_betas.tsv", sep="\t", index=False)
     h2_df.to_csv(f"{out_prefix}_h2.tsv", sep="\t", index=False)
