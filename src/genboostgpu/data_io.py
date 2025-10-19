@@ -1,5 +1,6 @@
 import cudf
 import cupy as cp
+import numpy as np
 import pandas as pd
 from pandas_plink import read_plink
 
