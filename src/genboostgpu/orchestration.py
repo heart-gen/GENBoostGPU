@@ -12,7 +12,9 @@ def run_windows_with_dask(
         windows, geno_arr=None, bim=None, fam=None, error_regions=None,
         outdir="results", batch_size=2048, window_size=500_000,
         by_hand=False, n_trials=20, n_iter=100, scatter=True,
-        use_window=True, save=True, prefix="vmr", max_in_flight=None
+        use_window=True, save=True, prefix="vmr", max_in_flight=None,
+        fixed_params=None, fixed_subsample=None, early_stop=None,
+        working_set=None 
 ):
     """
     Orchestrate boosting_elastic_net across genomic windows.
@@ -44,7 +46,6 @@ def run_windows_with_dask(
             window_size, by_hand, n_trials, n_iter, use_window, save, prefix
         )
 
-    # Optional scatter big, read-only arrays once
     if scatter:
         geno_f = _ensure_future(geno_arr, client)
         bim_f  = _ensure_future(bim,      client)
@@ -55,6 +56,13 @@ def run_windows_with_dask(
     if not windows:
         raise ValueError("No windows provided to run_windows_with_dask().")
 
+    def _fixed_dict_for(w):
+        if callable(fixed_params):
+            d = fixed_params(w)
+            if d is None: d = {}
+            return d
+        return (fixed_params or {})
+
     futures, results = [], []
     for w in windows:
         if max_in_flight and len(futures) >= max_in_flight:
@@ -63,15 +71,29 @@ def run_windows_with_dask(
             if r is not None:
                 results.append(r)
 
-        futures.append(client.submit(
-            run_single_window, chrom=w["chrom"], start=w["start"], end=w["end"],
-            geno_arr=geno_f, bim=bim_f, fam=fam_f, geno_path=w.get("geno_path", None),
-            pheno=w.get("pheno", None), pheno_path=w.get("pheno_path", None),
-            pheno_id=w.get("pheno_id", None), has_header=w.get("has_header", True),
-            y_pos=w.get("y_pos", None), error_regions=error_regions, outdir=outdir,
-            window_size=window_size, by_hand=by_hand, n_trials=n_trials, n_iter=n_iter,
-            use_window=use_window, batch_size=batch_size, pure=False
-        ))
+        # Gather per-window fixed params
+        fp = _fixed_dict_for(w)
+        submit_kwargs = dict(
+            chrom=w["chrom"], start=w["start"], end=w["end"],
+            geno_arr=geno_f, bim=bim_f, fam=fam_f, geno_path=w.get("geno_path"),
+            pheno=w.get("pheno"), pheno_path=w.get("pheno_path"),
+            pheno_id=w.get("pheno_id"), has_header=w.get("has_header", True),
+            y_pos=w.get("y_pos"), error_regions=error_regions, outdir=outdir,
+            window_size=window_size, by_hand=by_hand, n_trials=n_trials,
+            n_iter=n_iter, use_window=use_window,
+            batch_size=batch_size, pure=False
+        )
+        # Fixed assign
+        if "fixed_alpha" in fp:       submit_kwargs["fixed_alpha"] = fp["fixed_alpha"]
+        if "fixed_l1_ratio" in fp:    submit_kwargs["fixed_l1_ratio"] = fp["fixed_l1_ratio"]
+        if fixed_subsample is not None:
+            submit_kwargs["fixed_subsample"] = fixed_subsample
+        if early_stop is not None:
+            submit_kwargs["early_stop"] = early_stop
+        if working_set is not None:
+            submit_kwargs["working_set"] = working_set
+
+        futures.append(client.submit(run_single_window, **submit_kwargs))
 
     for f, r in as_completed(futures, with_results=True):
         if r is not None:
