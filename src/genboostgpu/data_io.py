@@ -48,7 +48,7 @@ def save_results(betas, h2_estimates, out_prefix, snp_ids=None, meta=None,
         snp_ids_arr = np.asarray(snp_ids)
 
     betas_df = pd.DataFrame({
-        "snp": snp_id_arr[nz_mask],
+        "snp": snp_ids_arr[nz_mask],
         "beta": betas_np[nz_mask],
     })
 
