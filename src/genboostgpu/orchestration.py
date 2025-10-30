@@ -1,10 +1,11 @@
-import logging
+import os, logging
 import pandas as pd
 from numba import cuda
 from contextlib import ExitStack
 from dask_cuda import LocalCUDACluster
-from .vmr_runner import run_single_window
 from dask.distributed import Client, Future, as_completed
+
+from .vmr_runner import run_single_window
 
 __all__ = [
     "run_windows_with_dask",
@@ -16,7 +17,7 @@ def run_windows_with_dask(
         by_hand=False, n_trials=20, n_iter=100, scatter=True,
         use_window=True, save=True, prefix="vmr", max_in_flight=None,
         fixed_params=None, fixed_subsample=None, early_stop=None,
-        working_set=None 
+        working_set=None
 ):
     """
     Orchestrate boosting_elastic_net across genomic windows.
@@ -47,7 +48,7 @@ def run_windows_with_dask(
                 )
             )
             client = stack.enter_context(Client(cluster))
-    
+
             if max_in_flight is None:
                 max_in_flight = 2 * n_gpus
 
