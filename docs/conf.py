@@ -37,6 +37,15 @@ extensions = [
     "sphinx.ext.viewcode",
 ]
 
+# Mock heavy GPU dependencies so autodoc can run without them.
+autodoc_mock_imports = [
+    "cupy",
+    "cudf",
+    "cuml",
+    "dask_cuda",
+    "numba",
+]
+
 autosummary_generate = True
 napoleon_google_docstring = True
 napoleon_numpy_docstring = True
