@@ -1,0 +1,4 @@
+:mod:`genboostgpu`
+===================
+
+.. automodule:: genboostgpu
