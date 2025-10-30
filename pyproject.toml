@@ -31,13 +31,16 @@ scikit-learn = ">=1.7.2,<2.0.0"
 numba = "<0.62"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.4.2"
-black = "^25.1.0"
-ruff = "^0.13.0"
-pytest-cov = "^7.0.0"
-mypy = "^1.18.1"
-sphinx = "^8.1.3"
-sphinx-rtd-theme = "^3.0.1"
+pytest = "^8.4"
+black = "^25.1"
+ruff = "^0.13"
+pytest-cov = "^7.0"
+mypy = "^1.18"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^8.1"
+sphinx-rtd-theme = "^3.0"
+sphinx-autodoc-typehints = "^3.0"
 
 [tool.poetry.urls]
 homepage = "https://github.com/heart-gen/GENBoostGPU"
