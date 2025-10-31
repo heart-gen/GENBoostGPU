@@ -1,8 +1,17 @@
 import os
+import random
+
+import cupy as cp
+import numpy as np
 import pandas as pd
-from pyhere import here
 from pathlib import Path
+from pyhere import here
+
 from genboostgpu.orchestration import run_windows_with_dask
+
+random.seed(42)
+np.random.seed(42)
+cp.random.seed(42)
 
 def get_error_list(error_file="../_h/snp-error-window.tsv"):
     if Path(error_file).exists():
