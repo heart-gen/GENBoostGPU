@@ -11,11 +11,12 @@ model thousands of genomic windows in parallel without leaving Python.
 Key features
 ------------
 
-* **Window orchestration** – distribute :mod:`genboostgpu.orchestration` jobs across one or many GPUs.
+* **Adaptive window orchestration** – distribute :mod:`genboostgpu.orchestration` jobs across one or many GPUs with auto-tuned ``max_in_flight`` concurrency.
 * **Automated SNP curation** – zero-variance filtering, missing data imputation, and LD clumping in :mod:`genboostgpu.snp_processing`.
 * **Elastic net boosting core** – reproducible variance decomposition and ridge refits from :mod:`genboostgpu.enet_boosting`.
 * **Flexible I/O** – load PLINK data, CuPy arrays, or parquet outputs with :mod:`genboostgpu.data_io`.
-* **Tuning toolbox** – global and per-window hyperparameter utilities in :mod:`genboostgpu.tuning`.
+* **Tuning toolbox** – global and per-window hyperparameter utilities in :mod:`genboostgpu.tuning`, including cohort-wide Optuna refits.
+* **Reproducibility guardrails** – documented seeding, metadata capture, and structured logging patterns for consistent reruns.
 
 Supported platforms
 -------------------
