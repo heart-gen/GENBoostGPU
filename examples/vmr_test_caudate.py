@@ -15,6 +15,9 @@ random.seed(42)
 np.random.seed(42)
 cp.random.seed(42)
 
+WINDOW_SIZE = 500_000
+EARLY_STOP = {"patience": 5, "min_delta": 1e-4, "warmup": 5}
+
 def get_error_list(error_file="../_h/snp-error-window.tsv"):
     error_path = Path(error_file)
     if error_path.exists():
@@ -31,6 +34,26 @@ def get_vmr_list(region: str) -> pd.DataFrame:
     if not vmr_file.exists():
         raise FileNotFoundError(f"VMR list file not found: {vmr_file}")
     return pd.read_csv(vmr_file, sep="\t", header=None)
+
+
+def load_bim(geno_path):
+    bim_path = Path(geno_path).with_suffix(".bim")
+    if not bim_path.exists():
+        raise FileNotFoundError(f"Missing BIM file for window: {bim_path}")
+    cols = ["chrom", "snp", "cm", "pos", "a1", "a2"]
+    bim = pd.read_csv(bim_path, sep=r"\s+", header=None, names=cols)
+    bim["chrom"] = bim["chrom"].astype(str)
+    bim["pos"] = bim["pos"].astype(int)
+    return bim[["chrom", "snp", "pos"]]
+
+
+def load_fam(geno_path):
+    fam_path = Path(geno_path).with_suffix(".fam")
+    if not fam_path.exists():
+        raise FileNotFoundError(f"Missing FAM file for window: {fam_path}")
+    cols = ["fid", "iid", "father", "mother", "sex", "phenotype"]
+    fam = pd.read_csv(fam_path, sep=r"\s+", header=None, names=cols)
+    return fam
 
 
 def construct_data_path(chrom, start, end, region, dtype="plink"):

@@ -31,12 +31,11 @@ The heavy CUDA libraries are mocked automatically in the docs configuration.
    pip install numpy pandas pytest session-info pyhere
 
 This keeps the environment light-weight while ensuring the doc build and test
-collection succeed. Avoid installing ``cudf`` or ``cuml`` on CPU-only hosts—they
-are only published for CUDA-enabled platforms.
+collection succeed. Avoid installing ``cudf-cu12`` or ``cuml-cu12`` on CPU-only
+hosts—they are only published for CUDA-enabled platforms.
 
 GPU / RAPIDS workflow (full pipeline execution)
 -----------------------------------------------
-
 For real analyses, install GENBoostGPU alongside RAPIDS components that match
 your CUDA driver. The project currently targets the ``cudf-cu12``/``cuml-cu12``
 packages at ``25.8.x`` and ``cupy-cuda12x >=13.3`` as defined in
@@ -50,12 +49,14 @@ packages at ``25.8.x`` and ``cupy-cuda12x >=13.3`` as defined in
    mamba activate genboostgpu
    pip install genboostgpu
 
-When working from a clone:
+If you are working from a clone and need to install in editable mode, install
+the published wheel first to ensure all GPU dependencies resolve correctly:
 
 .. code-block:: bash
 
    git clone https://github.com/heart-gen/GENBoostGPU.git
    cd GENBoostGPU
+   pip install genboostgpu
    pip install -e .
 
 Verify that the RAPIDS packages report the expected versions and CUDA runtime:
@@ -65,7 +66,8 @@ Verify that the RAPIDS packages report the expected versions and CUDA runtime:
    python -c "import cudf, cupy; print(cudf.__version__, cupy.cuda.runtime.getVersion())"
 
 If you upgrade drivers or move to a new CUDA minor version, rebuild the
-environment so that ``cudf/cuML`` and ``cupy`` stay in sync.
+environment so that ``cudf-cu12``/``cuml-cu12`` and ``cupy-cuda12x`` stay in
+sync.
 
 Next steps
 ----------
