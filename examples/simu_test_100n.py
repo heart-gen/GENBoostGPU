@@ -1,8 +1,16 @@
 import os
-import session_info
+import random
+
+import cupy as cp
+import numpy as np
 import pandas as pd
-from pyhere import here
+import session_info
 from pathlib import Path
+from pyhere import here
+
+random.seed(42)
+np.random.seed(42)
+cp.random.seed(42)
 
 from genboostgpu.vmr_runner import run_single_window
 from genboostgpu.hyperparams import enet_from_targets
