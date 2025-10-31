@@ -2,7 +2,6 @@
 [![Read the Docs](https://readthedocs.org/projects/genboostgpu/badge/?version=latest)](https://genboostgpu.readthedocs.io/en/latest/)
 [![PyPI](https://img.shields.io/pypi/v/genboostgpu.svg)](https://pypi.org/project/genboostgpu/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Tests](https://github.com/heart-gen/GENBoostGPU/actions/workflows/tests.yml/badge.svg)](https://github.com/heart-gen/GENBoostGPU/actions/workflows/tests.yml)
 [![DOI](https://zenodo.org/badge/1055676922.svg)](https://doi.org/10.5281/zenodo.17238797)
 
 **Genomic Elastic Net Boosting on GPU (GENBoostGPU)**
