@@ -15,7 +15,9 @@ Single GPU
 Multi GPU
    When more than one GPU is visible, the orchestrator launches a
    :class:`dask_cuda.LocalCUDACluster`. Windows are submitted asynchronously and
-   throttled with ``max_in_flight`` to balance throughput and memory usage.
+   throttled with ``max_in_flight`` to balance throughput and memory usage. From
+   v0.2.0 onward, ``max_in_flight`` defaults to ``2 * num_gpus`` so the scheduler
+   keeps enough work queued without exhausting memory on 4+ GPU nodes.
 
 Memory management tips
 ----------------------

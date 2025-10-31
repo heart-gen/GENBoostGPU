@@ -53,6 +53,9 @@ For cohort-wide defaults, use the helpers in :mod:`genboostgpu.tuning`:
 2. :func:`genboostgpu.tuning.global_tune_params` converts high-level targets
    (``c_lambda``, ``c_ridge``, ``subsample_frac``) into per-window ElasticNet
    parameters via :func:`genboostgpu.hyperparams.enet_from_targets`.
+   The helper reuses the same Optuna ridge refit stack as the per-window runs
+   and, when multiple GPUs are present, parallelises evaluation with the new
+   ``max_in_flight`` defaults so global sweeps finish quickly.
 3. Pass the resulting dictionary to the ``fixed_params`` callback in
    :func:`genboostgpu.orchestration.run_windows_with_dask`.
 
