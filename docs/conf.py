@@ -63,7 +63,8 @@ napoleon_attr_annotations = True
 # Mock heavy GPU dependencies so autodoc can run without them.
 autodoc_mock_imports = [
     "cupy", "cudf", "cuml", "dask_cuda", "numba",
-    "torch", "scanpy", "anndata",
+    "torch", "scanpy", "anndata", "pandas_plink", "pyarrow",
+    "optuna", "sklearn", "dask", "distributed"
 ]
 
 # Intersphinx cross-links

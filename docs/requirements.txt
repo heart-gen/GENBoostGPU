@@ -1,2 +1,4 @@
 sphinx>=8.1,<9.0
 sphinx-rtd-theme>=3.0,<4.0
+sphinx-autodoc-typehints>=2.2
+sphinx-copybutton>=0.5
