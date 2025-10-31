@@ -1,5 +1,4 @@
-import os
-import random
+import random, os
 from pathlib import Path
 
 import cupy as cp
@@ -15,7 +14,6 @@ from genboostgpu.tuning import global_tune_params, select_tuning_windows
 random.seed(42)
 np.random.seed(42)
 cp.random.seed(42)
-
 
 def get_error_list(error_file="../_h/snp-error-window.tsv"):
     error_path = Path(error_file)
@@ -133,24 +131,14 @@ def main():
     windows, bim, fam = build_windows(region, vmr_list)
 
     tuning_windows = select_tuning_windows(
-        windows,
-        bim,
-        frac=0.05,
-        n_min=40,
-        n_max=200,
-        window_size=500_000,
-        use_window=True,
-        n_bins=3,
-        per_chrom_min=1,
-        seed=13,
+        windows, bim, frac=0.05, n_min=40, n_max=200,
+        window_size=500_000, use_window=True,
+        n_bins=3, per_chrom_min=1, seed=13,
     )
 
     best = global_tune_params(
-        tuning_windows=tuning_windows,
-        bim=bim,
-        fam=fam,
-        window_size=500_000,
-        use_window=True,
+        tuning_windows=tuning_windows, bim=bim, fam=fam,
+        window_size=500_000, use_window=True,
         grid={
             "c_lambda": [0.5, 0.7, 1.0, 1.4, 2.0],
             "c_ridge": [0.5, 1.0, 2.0],
@@ -173,17 +161,12 @@ def main():
     )
 
     df = run_windows_with_dask(
-        windows,
-        error_regions=error_regions,
-        outdir="results",
-        window_size=500_000,
-        use_window=True,
-        batch_size=best["batch_size"],
-        fixed_params=fixed_fn,
+        windows, error_regions=error_regions, outdir="results",
+        window_size=500_000, use_window=True,
+        batch_size=best["batch_size"], fixed_params=fixed_fn,
         fixed_subsample=best["subsample_frac"],
         early_stop={"patience": 5, "min_delta": 1e-4, "warmup": 5},
-        working_set={"K": 1024, "refresh": 10},
-        save=True,
+        working_set={"K": 1024, "refresh": 10}, save=True,
         prefix="vmr",
     )
 
