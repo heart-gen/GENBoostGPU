@@ -2,9 +2,10 @@ VMR caudate tutorial
 ====================
 
 ``examples/vmr_test_caudate.py`` demonstrates running GENBoostGPU on variable
-methylated regions (VMRs) derived from brain tissue. It uses the same
-:func:`genboostgpu.orchestration.run_windows_with_dask` entry point as the
-simulation tutorial but streams PLINK/phenotype files from disk.
+methylated regions (VMRs) derived from brain tissue. It now mirrors the
+simulation tutorial by tuning global hyperparameters before launching
+:func:`genboostgpu.orchestration.run_windows_with_dask`, while still streaming
+PLINK/phenotype files from disk.
 
 Setup
 -----
@@ -15,16 +16,27 @@ Setup
 3. Confirm GPU availability and seed all RNGs (the script seeds ``random``,
    ``numpy``, and ``cupy`` to ``42``).
 
-Workflow highlights
--------------------
+Tuning and orchestration flow
+-----------------------------
 
 * :func:`get_error_list` loads blacklisted windows so they can be skipped.
-* :func:`get_vmr_list` enumerates VMR coordinates per region.
-* ``build_windows`` prepares dictionaries that point to PLINK and phenotype
-  files on disk; these map directly to the arguments accepted by
-  :func:`genboostgpu.vmr_runner.run_single_window`.
-* :func:`genboostgpu.orchestration.run_windows_with_dask` distributes the windows
-  across available GPUs, saving results in ``results/`` with the ``vmr`` prefix.
+* :func:`build_windows` materialises window dictionaries and stitches together
+  a combined BIM table so SNP counts (``M_raw``) are available for tuning.
+* :func:`genboostgpu.tuning.select_tuning_windows` samples a stratified subset of
+  windows based on SNP density, matching the approach used in the simulation
+  tutorial.
+* :func:`genboostgpu.tuning.global_tune_params` evaluates a modest grid of
+  ``c_lambda``, ``c_ridge``, ``subsample_frac``, and ``batch_size`` values to
+  derive fixed ElasticNet targets. The helper :func:`genboostgpu.hyperparams.enet_from_targets`
+  converts the winning ``(c_lambda, c_ridge)`` pair into ``fixed_alpha`` and
+  ``fixed_l1_ratio`` per window.
+* :func:`genboostgpu.orchestration.run_windows_with_dask` distributes all windows
+  across available GPUs, reusing the tuned hyperparameters and saving results in
+  ``results/`` with a region-specific prefix.
+
+The script prints the tuned configuration before orchestrating all VMRs so you
+can decide whether to retune (e.g. by expanding the grid or changing
+``WINDOW_SIZE``).
 
 Full script
 -----------
