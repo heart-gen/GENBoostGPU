@@ -4,6 +4,9 @@ Installation
 GENBoostGPU relies on NVIDIA GPUs and RAPIDS for production workloads, but the
 documentation and API reference can be built on CPU-only machines. The sections
 below outline both workflows and highlight the CUDA/RAPIDS version constraints.
+All runtime pins—including RAPIDS 25.8, ``cupy-cuda12x >=13.3``, ``optuna`` and
+``scikit-learn``—are tracked in ``pyproject.toml``. Refer to that file whenever
+you need the authoritative dependency matrix.
 
 Prerequisites
 -------------
@@ -33,18 +36,10 @@ hosts—they are only published for CUDA-enabled platforms.
 
 GPU / RAPIDS workflow (full pipeline execution)
 -----------------------------------------------
-
-For real analyses, install GENBoostGPU alongside the RAPIDS components that
-match your CUDA driver. The wheel on PyPI depends on the CUDA 12 builds listed
-in ``pyproject.toml``:
-
-* ``cudf-cu12 >=25.8.0,<26.0.0``
-* ``cuml-cu12 >=25.8.0,<26.0.0``
-* ``dask-cuda >=25.8.0,<26.0.0``
-* ``cupy-cuda12x >=13.3.0,<14.0.0``
-
-One way to satisfy these constraints is to create an environment with RAPIDS
-25.08 and then install GENBoostGPU from PyPI:
+For real analyses, install GENBoostGPU alongside RAPIDS components that match
+your CUDA driver. The project currently targets the ``cudf-cu12``/``cuml-cu12``
+packages at ``25.8.x`` and ``cupy-cuda12x >=13.3`` as defined in
+``pyproject.toml``.
 
 .. code-block:: bash
 
