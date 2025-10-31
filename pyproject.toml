@@ -45,7 +45,7 @@ sphinx-copybutton = "^0.5"
 sphinx-autodoc-typehints = "^3.0"
 
 [tool.poetry.urls]
-homepage = "https://github.com/heart-gen/GENBoostGPU"
+homepage = "https://genboostgpu.readthedocs.io/en/latest/"
 repository = "https://github.com/heart-gen/GENBoostGPU"
 "Bug Tracker" = "https://github.com/heart-gen/GENBoostGPU/issues"
 
