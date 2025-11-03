@@ -13,6 +13,18 @@ __all__ = [
     "boosting_elastic_net",
 ]
 
+def _standardize_train_only(X, y, tr_idx):
+    """
+    Standardize X and y using statistics computed on the TRAIN split only.
+    This prevents leakage into validation during feature screening/tuning.
+    """
+    x_mu = cp.mean(X[tr_idx], axis=0)
+    x_sd = cp.std(X[tr_idx], axis=0) + 1e-6
+    y_mu = cp.mean(y[tr_idx])
+    y_sd = cp.std(y[tr_idx]) + 1e-6
+    return (X - x_mu) / x_sd, (y - y_mu) / y_sd
+
+
 def boosting_elastic_net(
         X, y, snp_ids, n_iter=50, batch_size=500, n_trials=20,
         alphas=(0.1, 1.0), l1_ratios=(0.1, 0.9), subsample_frac=0.7,
@@ -27,13 +39,8 @@ def boosting_elastic_net(
     Boosting ElasticNet with final Ridge refit,
     genome-wide betas, and SNP-based variance components.
     """
-    # Standardization
-    if standardize:
-        X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-6)
-        y = (y - y.mean()) / (y.std() + 1e-6)
-
+    # Validation split (on GPU indices), avoid leakage
     n = X.shape[0]
-    # Validation split (on GPU indices)
     use_val = 0.0 < val_frac < 0.9 and n >= 25
     if use_val:
         rng = np.random.default_rng(random_state)
@@ -44,6 +51,10 @@ def boosting_elastic_net(
     else:
         tr_idx = cp.arange(n)
         val_idx = None
+
+    # Standardization with Train only
+    if standardize:
+        X, y = _standardize_train_only(X, y, tr_idx)
 
     # Initialize working-set
     if working_set is None:
@@ -62,6 +73,7 @@ def boosting_elastic_net(
         metric_mode = "val_r2" if use_val else "h2"
 
     residuals = y.copy()
+    cum_pred = cp.zeros_like(y)
     betas_boosting = cp.zeros(X.shape[1], dtype=cp.float32)
     h2_estimates, val_r2_hist = [], []
 
@@ -109,10 +121,11 @@ def boosting_elastic_net(
     for it in range(n_iter):
         # Refresh working set every `refresh` iterations
         if (cached_top_idx is None) or (it % refresh == 0):
-            # Fast corr with residuals
-            corrs = _corr_with_y_streaming(X, residuals, batch_size=batch_corr_cols)
-            top_idx = cp.argpartition(cp.abs(corrs), -K)[-K:]
-            top_idx = top_idx[cp.argsort(top_idx)]
+            # Screen by correlation with residuals on Train only (no leakage)
+            corrs = _corr_with_y_streaming(X[tr_idx], residuals[tr_idx],
+                                           batch_size=batch_corr_cols)
+            # Properly select by absolute correlation magnitude
+            top_idx = cp.argsort(cp.abs(corrs))[-K:]
             cached_top_idx = top_idx
         else:
             top_idx = cached_top_idx
@@ -130,22 +143,23 @@ def boosting_elastic_net(
                            fit_intercept=True)
         model.fit(X[tr_idx][:, top_idx], residuals[tr_idx])
 
-        # Update residuals and betas
-        residuals = residuals - model.predict(X[:, top_idx])
+        # Predict once on ALL rows and update residuals + cumulative predictions
+        step_pred_all = model.predict(X[:, top_idx])
+        residuals = residuals - step_pred_all
+        cum_pred += step_pred_all
         betas_boosting[top_idx] += model.coef_
 
-        # Metrics
-        preds_tr = model.predict(X[tr_idx][:, top_idx])
-        preds_val = model.predict(X[val_idx][:, top_idx]) if use_val else None
-
-        h2_now = float(cp.var(preds_tr).item())
-        h2_estimates.append(h2_now)
-        val_r2_now = _r2_gpu(y[val_idx], preds_val) if use_val else None
+        # Metrics (use cumulative predictions; out-of-sample if available)
         if use_val:
+            val_r2_now = _r2_gpu(y[val_idx], cum_pred[val_idx])
             val_r2_hist.append(val_r2_now)
+            metric_now = val_r2_now
+        else:
+            # Fallback to train R^2 if no validation set (may be optimistic)
+            metric_now = _r2_gpu(y[tr_idx], cum_pred[tr_idx])
+        h2_estimates.append(metric_now)
 
         # Early stopping logic
-        metric_now = val_r2_now if (metric_mode == "val_r2") else h2_now
         if it >= warmup:
             if metric_now > best_metric + min_delta:
                 best_metric = metric_now
@@ -172,9 +186,32 @@ def boosting_elastic_net(
         ridge_betas_full[kept_idx] = ridge_model.coef_
         kept_snps = [snp_ids[i] for i in kept_idx.get().tolist()]
 
-    # SNP-based variance explained
+    # SNP-based variance explained (legacy)
     snp_variances = X.var(axis=0)
-    h2_unscaled = float(cp.sum((ridge_betas_full ** 2) * snp_variances))
+
+    # Preferred, LD-aware h2 via b^T Eta b using Train covariance
+    if len(kept_idx) > 0:
+        Xk_tr = X[tr_idx][:, kept_idx]
+        # Center
+        Xk_tr = Xk_tr - cp.mean(Xk_tr, axis=0)
+        Sigma = (Xk_tr.T @ Xk_tr) / (Xk_tr.shape[0] - 1)
+        b = ridge_model.coef_
+        h2_ld = float(b.T @ Sigma @ b) / float(cp.var(y[tr_idx]))
+        # For backward-compatibility, expose diagonal-only estimate too
+        h2_diag = float(cp.sum((b ** 2) * cp.var(X[:, kept_idx], axis=0)))
+    else:
+        h2_ld = 0.0
+        h2_diag = 0.0
+
+    # Out-of-sample h2 from final model (if validation exists)
+    if len(kept_idx) > 0 and use_val:
+        preds_val_final = ridge_model.predict(X[val_idx][:, kept_idx])
+        h2_val = _r2_gpu(y[val_idx], preds_val_final)
+    elif len(kept_idx) > 0:
+        preds_tr_final = ridge_model.predict(X[:, kept_idx])
+        h2_val = _r2_gpu(y, preds_tr_final)
+    else:
+        h2_val = 0.0
 
     return {
         "betas_boosting": betas_boosting,
@@ -185,10 +222,14 @@ def boosting_elastic_net(
         "final_r2": final_r2,
         "ridge_model": ridge_model,
         "snp_ids": snp_ids,
-        "h2_unscaled": h2_unscaled,
         "snp_variances": snp_variances,
+        "h2_val": h2_val,
+        "h2_ld": h2_ld,
+        "h2_diag": h2_diag,
+        "h2_unscaled": h2_ld, # legacy value to avoid breakage
         "best_enet": {"alpha": best_alpha, "l1_ratio": best_l1},
-        "early_stop": {"metric": metric_mode, "best": best_metric, "iters_run": len(h2_estimates)}
+        "early_stop": {"metric": metric_mode, "best": best_metric,
+                       "iters_run": len(h2_estimates)}
     }
 
 
@@ -333,14 +374,20 @@ def _fit_ridge_delayed(X_train, y_train, X_val, y_val, alpha):
 
 
 def _r2_gpu(y_true, y_pred):
+    """
+    SSE/SST definition, clipped to [0,1].
+    Avoids small-sample quirks of corrcoef-based R^2 and keeps null regions at ~0.
+    """
     mask = ~cp.isnan(y_true) & ~cp.isnan(y_pred)
     if mask.sum() < 2:
         return 0.0
     yt, yp = y_true[mask], y_pred[mask]
-    vy, vp = cp.var(yt), cp.var(yp)
-    if vy <= 0 or vp <= 0:
+    sst = cp.sum((yt - cp.mean(yt))**2)
+    if sst <= 0:
         return 0.0
-    return float(cp.corrcoef(yt, yp)[0, 1] ** 2)
+    sse = cp.sum((yt - yp)**2)
+    r2 = 1.0 - (sse / sst)
+    return float(cp.clip(r2, 0.0, 1.0))
 
 
 def _auto_trials(M, base_max: int, min_trials: int = 5):
