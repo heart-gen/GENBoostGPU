@@ -45,7 +45,7 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
             raise ValueError("pheno_id required if using pheno_path")
         pheno = (df.iloc[:, y_pos].to_cupy() if y_pos is not None else df[pheno_id].to_cupy())
 
-    y = (pheno - pheno.mean()) / (pheno.std() + 1e-6)
+    y = pheno.astype(cp.float32) # No standardization here
 
     # Skip blacklist if provided
     if error_regions is not None:
@@ -98,6 +98,11 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         if "warmup"      in early_stop: enet_kwargs["warmup"]      = int(early_stop["warmup"])
         if "metric"      in early_stop: enet_kwargs["early_stop_metric"] = str(early_stop["metric"])
 
+    # Default calibration
+    if early_stop is None or "metric" not in early_stop:
+        enet_kwargs["early_stop_metric"] = "val_r2"
+    enet_kwargs.setdefault("val_frac", 0.20)
+
     # Run boosting EN
     results = boosting_elastic_net(
         X, y, snp_ids=snps, n_iter=n_iter, 
@@ -105,6 +110,19 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
         batch_size=min(int(batch_size), M),
         **enet_kwargs
     )
+
+    # Choose calibrated h2 to report under legacy key
+    h2_legacy = results.get("h2_val", None)
+    if h2_legacy is None or (isinstance(h2_legacy, float) and np.isnan(h2_legacy)):
+        h2_legacy = results.get("h2_ld", results.get("h2_unscaled", np.nan))
+
+    try:
+        h2_legacy = float(h2_legacy)
+    except Exception:
+        h2_legacy = np.nan
+
+    if h2_legacy is not np.nan:
+        h2_legacy = float(max(0.0, min(1.0, h2_legacy)))
 
     # Save + return
     if save_full:
@@ -118,6 +136,6 @@ def run_single_window(chrom, start, end, has_header=True, y_pos=None,
     return {
         "chrom": chrom, "start": start, "end": end, "num_snps": M,
         "N": N, "final_r2": results.get("final_r2"),
-        "h2_unscaled": results.get("h2_unscaled"),
+        "h2_unscaled": h2_legacy,
         "n_iter": len(results.get("h2_estimates", [])),
     }
