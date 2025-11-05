@@ -180,38 +180,43 @@ def boosting_elastic_net(
                                         cv=ridge_cv, subsample_frac=subsample_eff)
 
         ridge_model = Ridge(alpha=best_ridge["alpha"])
-        ridge_model.fit(X[:, kept_idx], y)
-        preds = ridge_model.predict(X[:, kept_idx])
-        final_r2 = _r2_gpu(y, preds)
+        # Fit Ridge on TRAIN rows if we have a validation split (prevents leakage)
+        Xk_fit = X[tr_idx][:, kept_idx] if use_val else X[:, kept_idx]
+        yk_fit = y[tr_idx] if use_val else y
+        ridge_model.fit(Xk_fit, yk_fit)
+        preds_fit = ridge_model.predict(Xk_fit)
+        final_r2 = _r2_gpu(yk_fit, preds_fit)
         ridge_betas_full[kept_idx] = ridge_model.coef_
         kept_snps = [snp_ids[i] for i in kept_idx.get().tolist()]
 
     # SNP-based variance explained (legacy)
-    snp_variances = X.var(axis=0)
-
-    # Preferred, LD-aware h2 via b^T Eta b using Train covariance
+    snp_variances = (X[tr_idx] if use_val else X).var(axis=0)
     if len(kept_idx) > 0:
-        Xk_tr = X[tr_idx][:, kept_idx]
-        # Center
-        Xk_tr = Xk_tr - cp.mean(Xk_tr, axis=0)
-        Sigma = (Xk_tr.T @ Xk_tr) / (Xk_tr.shape[0] - 1)
-        b = ridge_model.coef_
-        h2_ld = float(b.T @ Sigma @ b) / float(cp.var(y[tr_idx]))
-        # For backward-compatibility, expose diagonal-only estimate too
-        h2_diag = float(cp.sum((b ** 2) * cp.var(X[:, kept_idx], axis=0)))
+        # Diagonal-only estimate on the fit-scope rows (clipped to [0,1])
+        h2_diag = float(cp.clip(
+            cp.sum((ridge_betas_full[kept_idx] ** 2) *
+                   cp.var((X[tr_idx] if use_val else X)[:, kept_idx], axis=0)),
+            0.0, 1.0
+        ))
+    else:
+        h2_diag = 0.0
+    
+    # LD-aware h2 estimate via b^T Eta b using Train covariance
+    if len(kept_idx) > 0:
+        Xk = (X[tr_idx][:, kept_idx] if use_val else X[:, kept_idx]).astype(cp.float64)
+        Xk = Xk - cp.mean(Xk, axis=0)
+        Sigma = (Xk.T @ Xk) / (Xk.shape[0] - 1)
+        b64 = ridge_betas_full[kept_idx].astype(cp.float64)
+        vy = float(cp.var((y[tr_idx] if use_val else y).astype(cp.float64)))
+        h2_ld = float(cp.clip((b64.T @ Sigma @ b64) / (vy if vy > 0 else 1.0), 0.0, 1.0))
     else:
         h2_ld = 0.0
-        h2_diag = 0.0
 
-    # Out-of-sample h2 from final model (if validation exists)
+    # Preferred: validation R^2 if we have a val set; else fall back to fit-scope R^2
     if len(kept_idx) > 0 and use_val:
-        preds_val_final = ridge_model.predict(X[val_idx][:, kept_idx])
-        h2_val = _r2_gpu(y[val_idx], preds_val_final)
-    elif len(kept_idx) > 0:
-        preds_tr_final = ridge_model.predict(X[:, kept_idx])
-        h2_val = _r2_gpu(y, preds_tr_final)
+        h2_val = _r2_gpu(y[val_idx], ridge_model.predict(X[val_idx][:, kept_idx]))
     else:
-        h2_val = 0.0
+        h2_val = final_r2
 
     return {
         "betas_boosting": betas_boosting,
@@ -223,10 +228,9 @@ def boosting_elastic_net(
         "ridge_model": ridge_model,
         "snp_ids": snp_ids,
         "snp_variances": snp_variances,
-        "h2_val": h2_val,
+        "h2_unscaled": h2_diag, # legacy value to avoid breakage
         "h2_ld": h2_ld,
-        "h2_diag": h2_diag,
-        "h2_unscaled": h2_ld, # legacy value to avoid breakage
+        "h2_val": h2_val,
         "best_enet": {"alpha": best_alpha, "l1_ratio": best_l1},
         "early_stop": {"metric": metric_mode, "best": best_metric,
                        "iters_run": len(h2_estimates)}
