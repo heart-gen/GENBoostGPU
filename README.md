@@ -159,6 +159,83 @@ This runs boosting elastic net across synthetic SNP–phenotype pairs for benchm
 
 ---
 
+## CpG pipeline (million-scale)
+
+The million-scale CpG pipeline example lives in `examples/cpg_test_million.py`. It expects per-chromosome CpG manifests, per-chromosome phenotype tables, and a PLINK genotype prefix.
+
+### Required directory layout
+
+Match the default templates used by `examples/cpg_test_million.py`:
+
+```text
+data/
+  cpg_manifests/
+    cpg_manifest_chr{chrom}.parquet
+  phenotypes/
+    pheno_chr{chrom}.parquet
+  genotypes/
+    <plink_prefix>.bed
+    <plink_prefix>.bim
+    <plink_prefix>.fam
+```
+
+Concretely, the files should look like:
+
+- `data/cpg_manifests/cpg_manifest_chr{chrom}.parquet`
+- `data/phenotypes/pheno_chr{chrom}.parquet`
+- `data/genotypes/<plink_prefix>.bed/.bim/.fam`
+
+### Prepare CpG inputs from a BSseq object
+
+If your `BSseq` object already exists in memory (for example, as `bs`), save it first:
+
+```r
+saveRDS(bs, "data/bsseq.rds")
+```
+
+If your sample identifiers live in `pData(bs)$sample_id`, remember that column name for the helper script via `--sample-id-col sample_id`.
+
+Then run the repository helper script:
+
+```bash
+Rscript scripts/prepare_cpg_inputs.R --bsseq data/bsseq.rds --output data
+```
+
+Useful options:
+
+- `--sample-id-col sample_id` when sample IDs are stored in a specific `pData(bs)` column.
+- `--validate-fam data/genotypes/genotypes.fam` to ensure phenotype sample IDs match the PLINK `.fam` file.
+- `--no-smooth` if the `BSseq` object is already smoothed or you do not want smoothing.
+- `--min-cov 1` sets the median coverage filter (e.g., `1` keeps loci with median coverage ≥ 1).
+
+### Outputs produced by the helper script
+
+The script writes per-chromosome manifests and phenotypes that match the pipeline defaults:
+
+- `data/cpg_manifests/cpg_manifest_chr1.parquet`, etc.
+- `data/phenotypes/pheno_chr1.parquet`, etc.
+
+### Run the CpG million-scale example
+
+With the default output layout (`--output data`), you can run:
+
+```bash
+python examples/cpg_test_million.py --geno-path data/genotypes/genotypes
+```
+
+If you write to a different directory, override the templates:
+
+```bash
+python examples/cpg_test_million.py \
+  --geno-path data/genotypes/genotypes \
+  --cpg-manifest-template data/cpg_inputs/cpg_manifests/cpg_manifest_chr{chrom}.parquet \
+  --pheno-template data/cpg_inputs/phenotypes/pheno_chr{chrom}.parquet
+```
+
+The defaults in `examples/cpg_test_million.py` assume `data/cpg_manifests/` and `data/phenotypes/`, so either use `--output data` or pass template overrides.
+
+---
+
 ### GPU Scaling
 
 * On a single GPU: runs without a Dask cluster.
