@@ -9,7 +9,6 @@ API Reference
    genboostgpu.enet_boosting
    genboostgpu.hyperparams
    genboostgpu.orchestration
-   genboostgpu.pipeline
    genboostgpu.snp_processing
    genboostgpu.tuning
    genboostgpu.vmr_runner

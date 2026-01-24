@@ -27,9 +27,9 @@ Module responsibilities
 :mod:`genboostgpu.enet_boosting`
    Implements the boosting loop, Optuna-based ElasticNet tuning, and final ridge
    refit.
-:mod:`genboostgpu.pipeline`
-   Utilities for batching CpGs/traits and constructing delayed tasks that can be
-   scheduled by Dask.
+:mod:`genboostgpu.cpg_orchestration`
+   CpG-centric orchestration utilities for scheduling boosting tasks across
+   traits, chromosomes, or distributed Dask workers.
 :mod:`genboostgpu.orchestration`
    High-level entry point. Launches :func:`genboostgpu.vmr_runner.run_single_window`
    across windows, optionally using :class:`dask_cuda.LocalCUDACluster` for
