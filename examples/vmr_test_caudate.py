@@ -158,7 +158,6 @@ def main():
             "batch_size": [4096, 8192],
         },
         early_stop={"patience": 5, "min_delta": 1e-4, "warmup": 5},
-        use_window=True,
     )
 
     print("Best global parameters:", best)
