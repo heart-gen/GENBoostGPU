@@ -9,6 +9,7 @@ current task or read them in order for an end-to-end overview.
    :maxdepth: 1
 
    data
+   cpg_pipeline
    workflow
    tuning
    performance

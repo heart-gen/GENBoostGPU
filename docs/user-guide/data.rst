@@ -23,6 +23,11 @@ Parquet/TSV phenotypes
    Results written by :func:`genboostgpu.data_io.save_results` are parquet or TSV
    files with betas, variance explained, and metadata.
 
+   If you are preparing large-scale CpG inputs, see :doc:`cpg_pipeline` for the
+   recommended workflow. It documents the helper script
+   ``scripts/prepare_cpg_inputs.R`` and the manifest/phenotype templates used by
+   ``examples/cpg_test_million.py``.
+
 Sample and variant alignment
 ----------------------------
 
