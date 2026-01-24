@@ -1,5 +1,4 @@
 from . import data_io
-from . import pipeline
 from . import vmr_runner
 from . import orchestration
 from . import enet_boosting
@@ -12,11 +11,6 @@ from .vmr_runner import run_single_window
 from .enet_boosting import boosting_elastic_net
 from .orchestration import run_windows_with_dask
 from .data_io import load_genotypes, load_phenotypes, save_results
-from .pipeline import (
-    prepare_cpg_inputs,
-    run_boosting_for_cpgs,
-    run_boosting_for_cpg_delayed
-)
 from .snp_processing import (
     preprocess_genotypes,
     filter_zero_variance,
@@ -58,10 +52,6 @@ __all__ = [
     "load_genotypes",
     "load_phenotypes",
     "save_results",
-    # Legacy pipeline
-    "prepare_cpg_inputs",
-    "run_boosting_for_cpgs",
-    "run_boosting_for_cpg_delayed",
     # VMR processing
     "run_windows_with_dask",
     "run_single_window",
@@ -75,7 +65,6 @@ __all__ = [
     "leave_one_chromosome_out_tune",
     # Modules
     "data_io",
-    "pipeline",
     "vmr_runner",
     "orchestration",
     "enet_boosting",

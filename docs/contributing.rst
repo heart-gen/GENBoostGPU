@@ -48,7 +48,7 @@ Issue & PR workflow
 * Include a minimal reproducible example (inputs, hyperparameters, expected vs
   actual behaviour). Compress large datasets or provide pointers to public
   sources if possible.
-* Reference relevant modules (e.g., ``:mod:`genboostgpu.pipeline``) in your PR
+* Reference relevant modules (e.g., ``:mod:`genboostgpu.cpg_orchestration``) in your PR
   description to make review easier.
 
 Adding tutorials
