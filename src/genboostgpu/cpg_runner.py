@@ -249,3 +249,8 @@ def run_single_cpg(
         "h2_unscaled": h2_legacy,
         "n_iter": len(results.get("h2_estimates", [])),
     }
+
+
+from ._legacy import deprecated as _deprecated  # noqa: E402
+
+run_single_cpg = _deprecated(run_single_cpg)

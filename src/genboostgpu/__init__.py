@@ -1,36 +1,19 @@
-from . import data_io
-from . import vmr_runner
-from . import orchestration
-from . import enet_boosting
-from . import snp_processing
-from . import cpg_runner
-from . import cpg_orchestration
-from . import cpg_tuning
+"""GENBoostGPU.
 
-from .vmr_runner import run_single_window
-from .enet_boosting import boosting_elastic_net
-from .orchestration import run_windows_with_dask
-from .data_io import load_genotypes, load_phenotypes, save_results
-from .snp_processing import (
-    preprocess_genotypes,
-    filter_zero_variance,
-    filter_cis_window,
-    run_ld_clumping,
-    impute_snps
-)
+Two families of entry points live here:
 
-# CpG-specific modules for million-scale processing
-from .cpg_runner import run_single_cpg
-from .cpg_orchestration import (
-    run_cpgs_with_dask,
-    run_cpgs_by_chromosome,
-)
-from .cpg_tuning import (
-    select_tuning_cpgs,
-    global_tune_cpg_params,
-    leave_one_chromosome_out_tune,
-)
+* the local-genetic-variance engine (``genboostgpu.lgv``, ``genboostgpu.lsp``,
+  ``genboostgpu.sites``), which needs only NumPy and optionally CuPy; and
+* the legacy boosting elastic net (``boosting_elastic_net``,
+  ``run_windows_with_dask``, ``run_cpgs_*``), which needs RAPIDS (cuDF, cuML,
+  dask-cuda). Its ``final_r2`` is an in-sample fit; see the docs.
 
+Legacy names are imported lazily so ``import genboostgpu`` works without
+RAPIDS installed.
+"""
+from __future__ import annotations
+
+import importlib
 import warnings
 
 warnings.filterwarnings(
@@ -39,37 +22,45 @@ warnings.filterwarnings(
     module="pandera._pandas_deprecated"
 )
 
-__all__ = [
+_LEGACY_ATTRS = {
     # Core algorithms
-    "boosting_elastic_net",
+    "boosting_elastic_net": "enet_boosting",
     # SNP processing
-    "preprocess_genotypes",
-    "filter_zero_variance",
-    "filter_cis_window",
-    "run_ld_clumping",
-    "impute_snps",
+    "preprocess_genotypes": "snp_processing",
+    "filter_zero_variance": "snp_processing",
+    "filter_cis_window": "snp_processing",
+    "run_ld_clumping": "snp_processing",
+    "impute_snps": "snp_processing",
     # Data I/O
-    "load_genotypes",
-    "load_phenotypes",
-    "save_results",
+    "load_genotypes": "data_io",
+    "load_phenotypes": "data_io",
+    "save_results": "data_io",
     # VMR processing
-    "run_windows_with_dask",
-    "run_single_window",
+    "run_windows_with_dask": "orchestration",
+    "run_single_window": "vmr_runner",
     # CpG processing (million-scale)
-    "run_single_cpg",
-    "run_cpgs_with_dask",
-    "run_cpgs_by_chromosome",
+    "run_single_cpg": "cpg_runner",
+    "run_cpgs_with_dask": "cpg_orchestration",
+    "run_cpgs_by_chromosome": "cpg_orchestration",
     # CpG tuning
-    "select_tuning_cpgs",
-    "global_tune_cpg_params",
-    "leave_one_chromosome_out_tune",
-    # Modules
-    "data_io",
-    "vmr_runner",
-    "orchestration",
-    "enet_boosting",
-    "snp_processing",
-    "cpg_runner",
-    "cpg_orchestration",
-    "cpg_tuning",
-]
+    "select_tuning_cpgs": "cpg_tuning",
+    "global_tune_cpg_params": "cpg_tuning",
+    "leave_one_chromosome_out_tune": "cpg_tuning",
+}
+
+_LEGACY_MODULES = {
+    "data_io", "vmr_runner", "orchestration", "enet_boosting",
+    "snp_processing", "cpg_runner", "cpg_orchestration", "cpg_tuning",
+    "hyperparams", "tuning",
+}
+
+__all__ = sorted(set(_LEGACY_ATTRS) | _LEGACY_MODULES | {"backend"})
+
+
+def __getattr__(name):
+    if name in _LEGACY_ATTRS:
+        module = importlib.import_module(f".{_LEGACY_ATTRS[name]}", __name__)
+        return getattr(module, name)
+    if name in _LEGACY_MODULES or name == "backend":
+        return importlib.import_module(f".{name}", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

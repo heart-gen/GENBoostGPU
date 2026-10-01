@@ -9,7 +9,7 @@ from genboostgpu.snp_processing import (
 def test_filter_zero_variance_removes_constant_snps():
     X = cp.array([[1, 0], [1, 1], [1, 2]])  # first SNP constant
     snp_ids = ["snp1", "snp2"]
-    X_filt, snps_filt = filter_zero_variance(X, snp_ids)
+    X_filt, snps_filt, _ = filter_zero_variance(X, snp_ids)
     assert "snp1" not in snps_filt
     assert X_filt.shape[1] == 1
 
@@ -47,7 +47,9 @@ def test_filter_cis_window_returns_expected_snps():
     geno_df = cudf.DataFrame({
         "snp1":[0,1], "snp2":[1,2], "snp3":[0,0]
     })
-    geno_window, snps, pos = filter_cis_window(geno_df, bim, chrom=1,
-                                               start=2000, window_size=1000)
+    geno_arr = cp.asarray(geno_df.to_cupy())
+    geno_window, snps, pos = filter_cis_window(geno_arr, bim.to_pandas(), chrom=1,
+                                               pos=2000, window_size=1000,
+                                               use_window=True)
     assert "snp2" in snps
     assert geno_window is not None

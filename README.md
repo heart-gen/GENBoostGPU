@@ -6,64 +6,83 @@
 
 **Genomic Elastic Net Boosting on GPU (GENBoostGPU)**
 
-GENBoostGPU provides a scalable framework for running elastic net regression with 
-boosting across thousands of CpG sites, leveraging GPU acceleration with [RAPIDS cuML](https://rapids.ai), 
-[CuPy](https://cupy.dev), and [cuDF](https://docs.rapids.ai/api/cudf/stable/).  
-It supports SNP preprocessing, cis-window filtering, LD clumping, missing data 
-imputation, and phenotype integration — all optimized for large-scale epigenomics.
+GENBoostGPU estimates **local genetic variance of DNA methylation** for regions
+(CpG VMRs, CpH regions, tiles) and for millions of individual sites, on GPU or
+CPU. Since v0.4 it is the engine behind Module 02 (relative local SNP
+contribution score) and Module 03 (out-of-fold local SNP prediction) of the
+`dna-methylation-heritability` analysis, and reproduces that pipeline's R
+numerics: a line-for-line port of glmnet's elastic-net path solver, R's random
+number generator, Haseman–Elston regression, GEMMA BSLMM orchestration, and
+the frozen joint model.
 
 ---
 
-## Features
+## What it computes
 
-- **Window-based orchestration**:
-  - `run_windows_with_dask` coordinates execution across one or more GPUs using Dask.
-  - Handles batch scheduling of thousands of genomic windows.
-- **Single-window analysis**:
-  - `run_single_window` executes boosting elastic net on one genomic region.
-  - Accepts pre-loaded arrays (CuPy) or file paths (PLINK, phenotype tables).
-- **GPU-accelerated boosting elastic net**:
-  - Iterative boosting with cuML ElasticNet and final Ridge refit.
-  - Early stopping based on stability of variance explained.
-- **Automated SNP preprocessing**:
-  - Zero-variance SNP filtering
-  - Missing genotype imputation
-  - LD clumping (PLINK-like) with CuPy
-  - Cis-window SNP filtering
-- **Hyperparameter optimization**:
-  - Optuna-based tuning of ElasticNet (`alpha`, `l1_ratio`)
-  - Ridge regression tuning with delayed evaluation
-  - Optional manual cross-validation for custom grids
-- **Scalability**:
-  - Dask orchestration for multiple GPUs (`LocalCUDACluster`)
-  - Single-GPU fallback for smaller jobs
-- **Flexible outputs**:
-  - SNP betas, heritability estimates, variance explained
-  - Window-level summary tables (`.parquet`)
-  - Intermediate ridge/elastic net models for reproducibility
+| Command | Endpoint |
+|---|---|
+| `genboostgpu lgv` | Module 02 features per region — nested out-of-fold elastic net (`rho2_oof`, `r2_oof`), Haseman–Elston, genotype effective rank and LD, GEMMA BSLMM — then the frozen joint model, domain gate and **within-cell relative score** |
+| `genboostgpu lsp` | Module 03 end-to-end out-of-fold prediction with a permutation-calibrated HE screen |
+| `genboostgpu sites` | the same features for every CpG/CpH site or tile, with window blocks shared by nearby sites |
+| `scripts/build_regions.R` | CpG and CpH (mCA/mCH) region and tile phenotypes from bsseq/HDF5 stores |
 
----
+The score ranks loci within one cohort × region cell. Absolute locus-level PVE
+is not identifiable at these sample sizes; every row carries
+`absolute_pve_interpretation_allowed = FALSE`.
 
 ## Installation
 
-GENBoostGPU is available on [PyPI](https://pypi.org/project/genboostgpu/).  
-It requires Python ≥3.10 and an NVIDIA GPU with CUDA 12.x.
-
 ```bash
-pip install genboostgpu
-````
-
-For development (from source):
-
-```bash
-git clone https://github.com/heart-gen/GENBoostGPU.git
-cd GENBoostGPU
-poetry install
+pip install "genboostgpu[gpu,plink2]"   # GPU solver + PLINK 2 genotypes
+pip install genboostgpu                 # CPU only
+pip install "genboostgpu[legacy]"       # v0.3 boosting elastic net (RAPIDS)
 ```
+
+Python ≥ 3.10. The GPU solver needs an NVIDIA GPU with CUDA 12 (CuPy and
+numba-cuda). GEMMA 0.98.5 is required for BSLMM.
+
+## Quick start
+
+```bash
+# frozen Module 02 joint model -> portable JSON (once)
+Rscript scripts/export_frozen_joint_model.R --model joint-pve-calibrator.rds \
+    --sha256 9f26c3273746fda85d9bbf21e224857db9a1ad79a521582a12f241854c03223a --out joint-pve-model.json
+
+# region phenotypes + genome-wide genotypes
+genboostgpu lgv init --run-dir runs/cph-caudate --run-id cph-caudate-v1 \
+    --regions build/regions.tsv --phenotypes build/phenotypes.parquet \
+    --genotypes '/path/LIBD.chr{chrom}.AA' --covariates covs.tsv \
+    --numeric-covariates age --factor-covariates sex,diagnosis \
+    --cohort AA --region caudate --joint-model joint-pve-model.json \
+    --support joint-pve-characterized-support.tsv
+
+GBG_RUN_DIR=runs/cph-caudate GBG_N_SHARDS=8 GBG_ACCOUNT=<account> \
+    scripts/slurm/lgv_submit.sh gpu      # shards -> combine (score + QC gate)
+```
+
+`genboostgpu lgv init --replay <Module 02 run>` replays an accepted analysis
+run with identical tasks, donors and seeds. See the
+[user guide](https://genboostgpu.readthedocs.io/en/latest/user-guide/index.html)
+for Module 03, the CpG/CpH builders, site-level runs and GPU-cost tuning.
+
+## Lower GPU cost
+
+* One warp per glmnet problem: the 180 paths of a region (and many regions)
+  are solved in one CUDA launch; one process per GPU, sharded by SLURM array.
+* GEMMA runs on the GPU node's idle CPU cores or in a separate CPU-only array,
+  so GPU allocations never wait on MCMC.
+* `--device cpu` runs everything with numba threads when GPUs are scarce.
+* `examples/bench_lgv.py` measures loci/s per configuration.
 
 ---
 
-## Usage
+## Legacy: boosting elastic net (v0.3)
+
+> **Deprecated.** The boosting entry points remain importable and emit a
+> `DeprecationWarning`. Their `final_r2` is an in-sample fit and `h2_val`
+> reuses the early-stopping split, so neither is an out-of-fold estimate.
+
+### Usage
 
 GENBoostGPU can be used either for large-scale orchestration (many genomic windows across one or more GPUs) or for single-window testing/debugging.  
 
@@ -159,7 +178,7 @@ This runs boosting elastic net across synthetic SNP–phenotype pairs for benchm
 
 ---
 
-## CpG pipeline (million-scale)
+### CpG pipeline (million-scale)
 
 The million-scale CpG pipeline example lives in `examples/cpg_test_million.py`. It expects per-chromosome CpG manifests, per-chromosome phenotype tables, and a PLINK genotype prefix.
 

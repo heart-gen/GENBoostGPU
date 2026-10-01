@@ -143,3 +143,8 @@ def _ensure_future(x, client, broadcast=True):
     if x is None or isinstance(x, Future):
         return x
     return client.scatter(x, broadcast=broadcast)
+
+
+from ._legacy import deprecated as _deprecated  # noqa: E402
+
+run_windows_with_dask = _deprecated(run_windows_with_dask)

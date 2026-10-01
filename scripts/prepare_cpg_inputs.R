@@ -1,4 +1,6 @@
 #!/usr/bin/env Rscript
+## DEPRECATED: use scripts/prepare_site_inputs.sh (build_regions.R --step qc --unit site),
+## which streams HDF5 stores per chunk, supports CpH contexts and writes sample IDs.
 #' Prepare CpG Input Files for GENBoostGPU
 #'
 #' This script processes BSseq objects from whole-genome bisulfite sequencing (WGBS)

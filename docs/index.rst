@@ -3,10 +3,13 @@
 GENBoostGPU
 ===========
 
-**GPU-accelerated elastic net boosting for large-scale methylation and SNP studies.**
-GENBoostGPU orchestrates feature preprocessing, Optuna-powered hyperparameter
-search, and elastic net boosting on top of RAPIDS, CuPy, and Dask so you can
-model thousands of genomic windows in parallel without leaving Python.
+**GPU-accelerated local genetic variance of DNA methylation.**
+GENBoostGPU computes the Module 02 local-genetic-variance features and
+relative local-SNP-contribution score (nested out-of-fold elastic net with an
+R-faithful glmnet port, Haseman-Elston, BSLMM orchestration) and Module 03
+out-of-fold prediction for CpG and CpH regions or sites, on GPU or CPU. See
+:doc:`user-guide/lgv_engine`. The original boosting elastic net remains
+available as a legacy API.
 
 Key features
 ------------

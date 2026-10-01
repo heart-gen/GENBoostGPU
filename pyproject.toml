@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "genboostgpu"
 version = "0.0.0" # placeholder, replaced dynamically
-description = "GENBoostGPU provides a scalable framework for running elastic net regression with boosting across thousands of CpG sites, leveraging GPU acceleration with RAPIDS cuML, CuPy, and cuDF."
+description = "GPU-accelerated local genetic variance of DNA methylation: R-faithful nested elastic net, Haseman-Elston, BSLMM orchestration and relative local-SNP-contribution scores for regions and sites (CpG/CpH)."
 authors = [
     "Kynon J Benjamin <kj.benjamin90@gmail.com>",
     "Alexis Bennett <alexis.bennett@northwestern.edu>"
@@ -14,21 +14,40 @@ license = "GPL-3.0-or-later"
 packages = [{include = "genboostgpu", from = "src"}]
 keywords = [
     "genomics", "epigenomics", "dna-methylation",
-    "elastic-net", "boosting", "gpu", "snp-heritability"
+    "elastic-net", "boosting", "gpu", "snp-heritability",
+    "glmnet", "local-genetic-variance", "cph"
 ]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-cudf-cu12 = ">=25.8.0,<26.0.0"
-cuml-cu12 = ">=25.8.0,<26.0.0"
-dask-cuda = ">=25.8.0,<26.0.0"
-pandas = ">=2.3.2,<3.0.0"
-cupy-cuda12x = ">=13.3.0,<14.0.0"
-numpy = "<2.3.0"
-pandas-plink = ">=2.3.2,<3.0.0"
-optuna = ">=4.5.0,<5.0.0"
-scikit-learn = ">=1.7.2,<2.0.0"
-numba = "<0.62"
+numpy = ">=1.24,<2.3.0"
+pandas = ">=2.0,<3.0.0"
+scipy = ">=1.10"
+pyarrow = ">=14"
+numba = ">=0.59,<0.62"
+# PLINK 2 (.pgen) genotypes
+pgenlib = {version = ">=0.91", optional = true}
+# GPU solver (CUDA 12)
+cupy-cuda12x = {version = ">=13.3.0,<14.0.0", optional = true}
+numba-cuda = {version = ">=0.10", optional = true}
+# Legacy boosting elastic net (RAPIDS)
+cudf-cu12 = {version = ">=25.8.0,<26.0.0", optional = true}
+cuml-cu12 = {version = ">=25.8.0,<26.0.0", optional = true}
+dask-cuda = {version = ">=25.8.0,<26.0.0", optional = true}
+pandas-plink = {version = ">=2.3.2,<3.0.0", optional = true}
+optuna = {version = ">=4.5.0,<5.0.0", optional = true}
+scikit-learn = {version = ">=1.7.2,<2.0.0", optional = true}
+
+[tool.poetry.extras]
+gpu = ["cupy-cuda12x", "numba-cuda"]
+plink2 = ["pgenlib"]
+legacy = ["cupy-cuda12x", "cudf-cu12", "cuml-cu12", "dask-cuda", "pandas-plink",
+          "optuna", "scikit-learn"]
+all = ["cupy-cuda12x", "numba-cuda", "pgenlib", "cudf-cu12", "cuml-cu12", "dask-cuda",
+       "pandas-plink", "optuna", "scikit-learn"]
+
+[tool.poetry.scripts]
+genboostgpu = "genboostgpu.cli:main"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4"
@@ -48,6 +67,10 @@ sphinx-autodoc-typehints = "^3.0"
 homepage = "https://genboostgpu.readthedocs.io/en/latest/"
 repository = "https://github.com/heart-gen/GENBoostGPU"
 "Bug Tracker" = "https://github.com/heart-gen/GENBoostGPU/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["gpu: needs a CUDA device", "cudasim: GPU kernel in the numba CUDA simulator (slow, opt-in)"]
 
 [tool.poetry-dynamic-versioning]
 enable = true
