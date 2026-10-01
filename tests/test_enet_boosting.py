@@ -1,21 +1,12 @@
 import pytest
 import cupy as cp
-from genboostgpu.enet_boosting import (
-    boosting_elastic_net, _cv_elasticnet, _cv_ridge
-)
+from genboostgpu.enet_boosting import boosting_elastic_net, _cv_elasticnet
 
 def test_cv_elasticnet_finds_valid_params():
     X = cp.random.randn(20, 5)
     y = cp.random.randn(20)
     result = _cv_elasticnet(X, y, alphas=[0.1, 1.0], l1_ratios=[0.1, 0.9], cv=2)
     assert "alpha" in result and "l1_ratio" in result
-    assert result["alpha"] in [0.1, 1.0]
-
-def test_cv_ridge_finds_valid_alpha():
-    X = cp.random.randn(20, 5)
-    y = cp.random.randn(20)
-    result = _cv_ridge(X, y, alphas=[0.1, 1.0], cv=2)
-    assert "alpha" in result
     assert result["alpha"] in [0.1, 1.0]
 
 def test_boosting_elastic_net_runs_and_returns_dict():

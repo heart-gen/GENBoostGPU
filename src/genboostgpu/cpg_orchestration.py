@@ -595,3 +595,13 @@ def _save_checkpoint(results, checkpoint_file, completed_cpgs, completed_file):
         logger.debug(f"Checkpoint saved: {len(results)} results, {len(completed_cpgs)} completed")
     except Exception as e:
         logger.warning(f"Failed to save checkpoint: {e}")
+
+
+from ._legacy import deprecated as _deprecated  # noqa: E402
+
+run_cpgs_with_dask = _deprecated(run_cpgs_with_dask)
+
+
+from ._legacy import deprecated as _deprecated  # noqa: E402
+
+run_cpgs_by_chromosome = _deprecated(run_cpgs_by_chromosome)

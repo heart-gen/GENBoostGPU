@@ -415,3 +415,8 @@ def _fit_score_delayed(X_train, y_train, X_val, y_val, alpha, l1,
         else:
             return mse, (alpha, l1)
     return task()
+
+
+from ._legacy import deprecated as _deprecated  # noqa: E402
+
+boosting_elastic_net = _deprecated(boosting_elastic_net)
