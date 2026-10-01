@@ -64,7 +64,7 @@ napoleon_attr_annotations = True
 autodoc_mock_imports = [
     "cupy", "cudf", "cuml", "dask_cuda", "numba",
     "torch", "pandas_plink", "pyarrow",
-    "optuna", "sklearn", "dask", "distributed"
+    "optuna", "sklearn", "dask", "distributed", "scipy", "pgenlib", "h5py"
 ]
 
 # Intersphinx cross-links
