@@ -72,6 +72,9 @@ v0.4.0
      of on every chromosome load.
    * ``genboostgpu`` command-line interface and SLURM launchers.
    * ``fit_bslmm_pve`` accepts a relative ``work_dir``.
+   * **Dependencies**: ``pyarrow`` 23.0.1 or later; the ``legacy`` extra
+     moves to RAPIDS 26.2 (``cudf-cu12``, ``cuml-cu12``, ``dask-cuda``), which
+     brings ``distributed`` 2026.1.1. Both address security advisories.
    * **Packaging**: RAPIDS dependencies moved to the ``legacy`` extra; GPU
      solver in ``gpu``; PLINK2 reader in ``plink2``.
    * **Deprecated**: the boosting entry points (``boosting_elastic_net``,
