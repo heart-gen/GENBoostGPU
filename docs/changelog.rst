@@ -11,6 +11,9 @@ Unreleased
      1.3e-3 against sealed runs. A CPU without AVX-512 now stops the shard
      instead of silently changing the numbers.
    * ``fit_bslmm_pve`` accepts a relative ``work_dir``.
+   * ``--gemma-blas-coretype`` on ``lgv init`` and ``sites init`` sets the
+     kernel per run (``auto``, ``Haswell``, ...); unknown kernel names are
+     rejected, since OpenBLAS would silently ignore them.
 
 v0.4.0
    * **New engine for the manuscript endpoints** (``genboostgpu.lgv``,

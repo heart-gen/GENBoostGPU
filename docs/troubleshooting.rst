@@ -3,6 +3,17 @@ Troubleshooting
 
 Common deployment problems and their fixes.
 
+GEMMA kernel needs AVX-512
+--------------------------
+
+* Symptom: a shard stops with ``GEMMA OpenBLAS kernel 'SkylakeX' needs CPU
+  flags ... which this node lacks``.
+* Cause: the run pins GEMMA's OpenBLAS to ``SkylakeX`` (the default) and the
+  node has no AVX-512.
+* Fix: run on AVX-512 nodes, or initialize the run with
+  ``--gemma-blas-coretype auto`` (or ``Haswell``) and keep that setting for
+  every run you compare (:ref:`gemma-blas-kernel`).
+
 CUDA / RAPIDS version mismatch
 ------------------------------
 

@@ -26,17 +26,43 @@ import pandas as pd
 from .rstats import r_lm_fit
 
 __all__ = ["residualize_phenotype", "write_bimbam_inputs", "fit_bslmm_pve",
-           "BslmmPool", "BslmmSettings", "file_sha256", "mean_impute_for_bslmm"]
+           "BslmmPool", "BslmmSettings", "file_sha256", "mean_impute_for_bslmm",
+           "BLAS_CORETYPES", "normalize_blas_coretype"]
 
 
 # CPU flags each OpenBLAS kernel family needs; forcing a kernel the CPU lacks
 # would crash GEMMA with an illegal instruction.
 _CORETYPE_FLAGS = {
     "skylakex": ("avx512f", "avx512cd", "avx512bw", "avx512dq", "avx512vl"),
+    "cooperlake": ("avx512f", "avx512cd", "avx512bw", "avx512dq", "avx512vl",
+                   "avx512_bf16"),
     "haswell": ("avx2", "fma"),
     "zen": ("avx2", "fma"),
     "sandybridge": ("avx",),
 }
+
+# Kernel names OpenBLAS accepts in OPENBLAS_CORETYPE (x86-64 DYNAMIC_ARCH
+# builds). An unknown name is not an error inside OpenBLAS: it prints "Core
+# not found" and silently falls back to auto-detection, so names are checked
+# here instead. Newer OpenBLAS releases add names (Cooperlake,
+# SapphireRapids); an older binary falls back to auto-detection on those too.
+BLAS_CORETYPES = (
+    "Prescott", "Core2", "Penryn", "Dunnington", "Nehalem", "Atom", "Nano",
+    "Sandybridge", "Haswell", "SkylakeX", "Cooperlake", "SapphireRapids",
+    "Opteron", "Opteron_SSE3", "Barcelona", "Bobcat", "Bulldozer", "Piledriver",
+    "Steamroller", "Excavator", "Zen",
+)
+
+
+def normalize_blas_coretype(name) -> str:
+    """Canonical spelling of an OpenBLAS kernel name, or ``"auto"``."""
+    if name is None or str(name).strip().lower() in ("", "auto"):
+        return "auto"
+    for known in BLAS_CORETYPES:
+        if str(name).strip().lower() == known.lower():
+            return known
+    raise ValueError(f"unknown OpenBLAS kernel {name!r}; use 'auto' or one of "
+                     f"{', '.join(BLAS_CORETYPES)}")
 
 
 @lru_cache(maxsize=1)
@@ -72,7 +98,7 @@ class BslmmSettings:
         self.sampling = int(sampling)
         self.rpace = int(rpace)
         self.threads = int(threads)
-        self.blas_coretype = blas_coretype or "auto"
+        self.blas_coretype = normalize_blas_coretype(blas_coretype)
 
     def as_dict(self):
         return dict(gemma_bin=self.gemma_bin, bslmm_mode=self.bslmm_mode,
@@ -87,8 +113,10 @@ class BslmmSettings:
             raise RuntimeError(
                 f"GEMMA OpenBLAS kernel {self.blas_coretype!r} needs CPU flags "
                 f"{', '.join(missing)}, which this node lacks. Run on a node that has "
-                "them, or set bslmm.blas_coretype in run.json to another kernel or "
-                "'auto' (bslmm_pve then is no longer comparable with SkylakeX runs).")
+                "them, or initialize the run with --gemma-blas-coretype auto (or a kernel "
+                "this CPU supports, such as Haswell; before any task has run, "
+                "bslmm.blas_coretype in run.json can be edited instead). bslmm_pve is "
+                "then no longer identical to SkylakeX runs.")
 
     def gemma_env(self) -> dict:
         """Environment for one GEMMA process."""
