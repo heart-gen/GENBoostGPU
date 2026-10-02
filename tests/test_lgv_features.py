@@ -58,3 +58,21 @@ def test_crossfit_gpu_matches_cpu(fx):
     gg = crossfit_elastic_net(g, y, cov, settings, seed=1234567, device="gpu")["metrics"]
     for key in ("r2_oof", "rho2_oof"):
         assert gg[key] == pytest.approx(c[key], abs=1e-8)
+
+
+def test_bslmm_blas_coretype(monkeypatch):
+    import genboostgpu.lgv.bslmm as bslmm
+
+    monkeypatch.setenv("OPENBLAS_CORETYPE", "Prescott")
+    env = bslmm.BslmmSettings().gemma_env()
+    assert env["OPENBLAS_CORETYPE"] == "SkylakeX" and env["OPENBLAS_NUM_THREADS"] == "1"
+    assert "OPENBLAS_CORETYPE" not in bslmm.BslmmSettings(blas_coretype="auto").gemma_env()
+    # Old run.json files have no blas_coretype and get the pinned default.
+    old = {k: v for k, v in bslmm.BslmmSettings().as_dict().items() if k != "blas_coretype"}
+    assert bslmm.BslmmSettings(**old).blas_coretype == "SkylakeX"
+
+    monkeypatch.setattr(bslmm, "_cpu_flags", lambda: frozenset({"avx", "avx2", "fma"}))
+    with pytest.raises(RuntimeError, match="avx512"):
+        bslmm.BslmmSettings().check_cpu()
+    bslmm.BslmmSettings(blas_coretype="Haswell").check_cpu()
+    bslmm.BslmmSettings(blas_coretype="auto").check_cpu()

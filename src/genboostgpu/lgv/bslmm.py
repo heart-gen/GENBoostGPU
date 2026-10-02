@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -28,22 +29,80 @@ __all__ = ["residualize_phenotype", "write_bimbam_inputs", "fit_bslmm_pve",
            "BslmmPool", "BslmmSettings", "file_sha256", "mean_impute_for_bslmm"]
 
 
+# CPU flags each OpenBLAS kernel family needs; forcing a kernel the CPU lacks
+# would crash GEMMA with an illegal instruction.
+_CORETYPE_FLAGS = {
+    "skylakex": ("avx512f", "avx512cd", "avx512bw", "avx512dq", "avx512vl"),
+    "haswell": ("avx2", "fma"),
+    "zen": ("avx2", "fma"),
+    "sandybridge": ("avx",),
+}
+
+
+@lru_cache(maxsize=1)
+def _cpu_flags() -> frozenset:
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.startswith("flags"):
+                    return frozenset(line.split(":", 1)[1].split())
+    except OSError:
+        pass
+    return frozenset()
+
+
 class BslmmSettings:
-    """Locked GEMMA settings (``joint-pve-20260820.tsv``)."""
+    """Locked GEMMA settings (``joint-pve-20260820.tsv``).
+
+    ``blas_coretype`` pins the OpenBLAS kernel GEMMA uses. The GEMMA binary
+    links OpenBLAS 0.3.9 built with ``DYNAMIC_ARCH``, which picks a kernel from
+    the CPU at run time, and the kernels round differently: the reported
+    ``pve`` moves by up to ~1e-3 between them. The sealed R runs used
+    ``SkylakeX`` (quest10 nodes); on CPUs that OpenBLAS 0.3.9 does not know,
+    such as quest13's Xeon 8592+, it falls back to the generic ``Prescott``
+    kernel. ``"auto"`` leaves the choice to OpenBLAS.
+    """
 
     def __init__(self, gemma_bin="/projects/p32505/opt/bin/gemma", bslmm_mode=1,
-                 burn_in=10000, sampling=100000, rpace=10, threads=1):
+                 burn_in=10000, sampling=100000, rpace=10, threads=1,
+                 blas_coretype="SkylakeX"):
         self.gemma_bin = gemma_bin
         self.bslmm_mode = int(bslmm_mode)
         self.burn_in = int(burn_in)
         self.sampling = int(sampling)
         self.rpace = int(rpace)
         self.threads = int(threads)
+        self.blas_coretype = blas_coretype or "auto"
 
     def as_dict(self):
         return dict(gemma_bin=self.gemma_bin, bslmm_mode=self.bslmm_mode,
                     burn_in=self.burn_in, sampling=self.sampling, rpace=self.rpace,
-                    threads=self.threads)
+                    threads=self.threads, blas_coretype=self.blas_coretype)
+
+    def check_cpu(self) -> None:
+        """Raise when this CPU cannot run the pinned OpenBLAS kernel."""
+        need = _CORETYPE_FLAGS.get(self.blas_coretype.lower(), ())
+        missing = [f for f in need if f not in _cpu_flags()]
+        if missing:
+            raise RuntimeError(
+                f"GEMMA OpenBLAS kernel {self.blas_coretype!r} needs CPU flags "
+                f"{', '.join(missing)}, which this node lacks. Run on a node that has "
+                "them, or set bslmm.blas_coretype in run.json to another kernel or "
+                "'auto' (bslmm_pve then is no longer comparable with SkylakeX runs).")
+
+    def gemma_env(self) -> dict:
+        """Environment for one GEMMA process."""
+        # One BLAS thread per chain, as in the R pipeline's 1-CPU array tasks:
+        # parallelism comes from running chains side by side, and oversubscribed
+        # BLAS threads make each chain many times slower.
+        env = dict(os.environ)
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "GOTO_NUM_THREADS", "BLIS_NUM_THREADS"):
+            env[var] = str(self.threads)
+        env.pop("OPENBLAS_CORETYPE", None)
+        if self.blas_coretype.lower() != "auto":
+            env["OPENBLAS_CORETYPE"] = self.blas_coretype
+        return env
 
 
 def residualize_phenotype(phenotype, covariates=None):
@@ -99,6 +158,9 @@ def fit_bslmm_pve(genotype, phenotype, work_dir, settings: BslmmSettings, seed: 
     """Run GEMMA ``-bslmm`` and summarize the PVE chain (R-identical)."""
     if not os.path.exists(settings.gemma_bin):
         raise FileNotFoundError(f"GEMMA binary not found: {settings.gemma_bin}")
+    settings.check_cpu()
+    # GEMMA runs inside work_dir, so its input paths must not be relative.
+    work_dir = os.path.abspath(work_dir)
     os.makedirs(work_dir, exist_ok=True)
     inputs = write_bimbam_inputs(work_dir, genotype, phenotype, prefix="locus")
     prefix = "bslmm"
@@ -108,13 +170,7 @@ def fit_bslmm_pve(genotype, phenotype, work_dir, settings: BslmmSettings, seed: 
             "-rpace", str(settings.rpace), "-seed", str(int(seed)),
             "-outdir", work_dir, "-o", prefix]
     log_path = os.path.join(work_dir, "gemma.log")
-    # One BLAS thread per chain, as in the R pipeline's 1-CPU array tasks:
-    # parallelism comes from running chains side by side, and oversubscribed
-    # BLAS threads make each chain many times slower.
-    env = dict(os.environ)
-    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                "GOTO_NUM_THREADS", "BLIS_NUM_THREADS"):
-        env[var] = str(settings.threads)
+    env = settings.gemma_env()
     started = time.time()
     with open(log_path, "w") as log:
         status = subprocess.call(args, stdout=log, stderr=subprocess.STDOUT,
@@ -166,6 +222,7 @@ class BslmmPool:
     """Process pool for GEMMA chains (``max_workers`` CPU processes)."""
 
     def __init__(self, max_workers: int, settings: BslmmSettings):
+        settings.check_cpu()  # fail the shard before any task row is written
         self.settings = settings
         self._pool = ProcessPoolExecutor(max_workers=max(1, int(max_workers)))
 

@@ -73,10 +73,17 @@ Fidelity to R
   statuses, and match the nested-EN features within that CPU-to-CPU envelope
   (see below).
 * **BSLMM** — GEMMA's ``h`` chain is reproduced exactly; its reported ``pve``
-  additionally depends on the OpenBLAS thread count GEMMA ran with (per-draw
-  differences of ~1e-3). GENBoostGPU pins GEMMA to one thread
-  (``bslmm.threads`` in ``run.json``); replaying
-  ``lgv-all_individuals.EA-caudate-20260917`` reproduced ``bslmm_pve`` to 1e-16.
+  additionally depends on the OpenBLAS kernel GEMMA ran with. The GEMMA binary
+  links OpenBLAS 0.3.9 built with ``DYNAMIC_ARCH``, which picks a kernel from
+  the CPU: ``SkylakeX`` on quest10 nodes, where the sealed R runs ran, but the
+  generic ``Prescott`` fallback on quest13 (Xeon 8592+, a CPU 0.3.9 does not
+  know). The two differ by up to 1.3e-3 in ``bslmm_pve``. GENBoostGPU pins the
+  kernel with ``OPENBLAS_CORETYPE`` (``bslmm.blas_coretype`` in ``run.json``,
+  default ``SkylakeX``) and refuses to start GEMMA on a CPU without AVX-512;
+  set it to ``auto`` (or ``Haswell``) to run on such nodes, at the cost of
+  comparability with sealed runs. With the pin, ``bslmm_pve`` matches the
+  sealed ``lgv-all_individuals.EA-caudate-20260917`` values to 1e-16 on both
+  node types.
 
 Replay of an accepted run
 -------------------------
@@ -87,7 +94,7 @@ with the sealed tables:
 
 ========================================  =====================================
 Statuses, HE, ``p_eff``, LD               identical (≤ 1e-13)
-``bslmm_pve`` (GEMMA, 1 thread)           identical (≤ 1e-16)
+``bslmm_pve`` (GEMMA, SkylakeX kernel)    identical (≤ 1e-16)
 ``rho2_oof``                              62 % bitwise; 3.5 % differ > 1e-4;
                                           max 4.6e-3; Spearman 0.999998
 ``pve_cis_joint_unbounded``               57 % bitwise; 2.7 % differ > 1e-4;
