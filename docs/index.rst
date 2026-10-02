@@ -25,7 +25,7 @@ Supported platforms
 -------------------
 
 GENBoostGPU targets Linux with NVIDIA GPUs (Ampere or newer) and CUDA 12.x.
-Multi-GPU orchestration requires RAPIDS ``cudf/cuML`` 25.8 and ``dask-cuda`` 25.8
+Multi-GPU orchestration requires RAPIDS ``cudf/cuML`` 26.2 and ``dask-cuda`` 26.2
 or newer. Development and documentation can be performed on CPU-only machines by
 installing the mock/documentation requirements.
 
