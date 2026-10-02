@@ -27,7 +27,18 @@ def _shfl_xor_sync(self, mask, value, offset):
     return out
 
 
+def _ballot_sync(self, mask, predicate):
+    t = threading.current_thread()
+    vals = t._manager.__dict__.setdefault("_gbg_ballot", {})
+    vals[t.threadIdx.x] = bool(predicate)
+    t.syncthreads()
+    out = sum(1 << lane for lane, v in vals.items() if v)
+    t.syncthreads()
+    return out
+
+
 FakeCUDAModule.shfl_xor_sync = _shfl_xor_sync
+FakeCUDAModule.ballot_sync = _ballot_sync
 FakeCUDAModule.syncwarp = lambda self, mask=0xFFFFFFFF: threading.current_thread().syncthreads()
 
 from genboostgpu.lgv.glmnet import GlmnetProblem, fit_paths  # noqa: E402
@@ -46,6 +57,10 @@ x = rng.binomial(2, 0.4, size=(12, 6)).astype(float)
 y = x[:, 0] - x[:, 3] + rng.normal(size=12)
 for std in (True, False):
     probs.append(GlmnetProblem(x, y, 0.5, nlambda=5, type_gaussian="naive", standardize=std))
+# n > 32: two register slots per lane (the n <= 14 problems leave slots empty)
+x = rng.binomial(2, 0.3, size=(40, 6)).astype(float)
+y = x[:, 1] - 0.5 * x[:, 2] + rng.normal(size=40)
+probs.append(GlmnetProblem(x, y, 0.5, nlambda=5, type_gaussian="naive"))
 
 cpu = fit_paths(probs)
 sim = solve_batch_gpu(probs, warps_per_block=1, xp=np)

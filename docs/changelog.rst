@@ -20,6 +20,19 @@ Unreleased
      GPU no longer waits on host work (1.33 to 2.52 units/s on 5,000 CpH units
      on an A100). Rows are bitwise identical to before on CPU and GPU. Host
      memory per batched unit rises from about 0.5 to 0.8 GiB.
+   * **Faster GPU solver** (``fit_paths(device="gpu")``): a 64-unit site
+     batch (11,880 glmnet paths) solves in 8.3 s instead of 25.9 s, and a
+     5,000-unit CpH run on an A100 takes 961 s instead of 1,983 s (5.2
+     units/s). In the kernel, lanes compute KKT and Gram dot products for
+     separate columns, the residual lives in shared memory, and each
+     coordinate's column is held in registers and loaded while the previous
+     coordinate is processed. Around it, only the used part of the
+     coefficient buffer is copied back (about 7x less), design matrices are
+     transposed on the GPU, and fits keep only the coefficients of variables
+     that are ever active (``GlmnetFit.rows``/``beta_rows``; ``beta`` is
+     built on first use). Peak host memory falls from 52 to 17 GiB at batch
+     64. GPU rows agree with the CPU path as before (to rounding); CPU
+     results are unchanged and still bitwise identical to R.
    * Genome-wide ``.pvar`` files load faster: positions are parsed as
      integers, and chromosome names are normalized once per fileset instead
      of on every chromosome load.
