@@ -21,7 +21,7 @@ CUDA / RAPIDS version mismatch
   importing ``cudf``/``cuml``.
 * Fix: Verify that your installed RAPIDS packages (``cudf``, ``cuml``,
   ``dask-cuda``) match the CUDA driver version. GENBoostGPU targets the
-  ``25.8`` release on CUDA 12.x. Recreate the environment with matching conda
+  ``26.2`` release on CUDA 12.x. Recreate the environment with matching conda
   channels or upgrade the host driver.
 
 Out of memory (OOM)
