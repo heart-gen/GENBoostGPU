@@ -14,6 +14,15 @@ Unreleased
    * ``--gemma-blas-coretype`` on ``lgv init`` and ``sites init`` sets the
      kernel per run (``auto``, ``Haswell``, ...); unknown kernel names are
      rejected, since OpenBLAS would silently ignore them.
+   * **Faster site runs** (``sites run``): the cross-validation summary is
+     vectorized (about 4x faster per unit), and batches are solved and
+     finished on background threads while the next batch is prepared, so the
+     GPU no longer waits on host work (1.33 to 2.52 units/s on 5,000 CpH units
+     on an A100). Rows are bitwise identical to before on CPU and GPU. Host
+     memory per batched unit rises from about 0.5 to 0.8 GiB.
+   * Genome-wide ``.pvar`` files load faster: positions are parsed as
+     integers, and chromosome names are normalized once per fileset instead
+     of on every chromosome load.
 
 v0.4.0
    * **New engine for the manuscript endpoints** (``genboostgpu.lgv``,

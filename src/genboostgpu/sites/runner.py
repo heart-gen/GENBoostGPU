@@ -12,7 +12,9 @@ window (Module 02 semantics; no sharing). Per block, genotype I/O, variant QC,
 the GRM, ``p_eff`` and LD are computed once, and HE is one batched quadratic
 form over every unit with complete data. Units with missing values use their
 own donor subset. Elastic-net problems of many units are solved in one
-batch (one CUDA launch on the GPU).
+batch (one CUDA launch on the GPU). Batches are solved and their units'
+cross-fits finished on background threads while the main thread prepares
+the next batch.
 
 Rows use the Stage 01 schema (``vmr_id`` holds the unit id) plus
 ``window_block_id``, ``window_start``, ``window_end``; ``genboostgpu lgv
@@ -25,6 +27,7 @@ import functools
 import glob
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 import numpy as np
@@ -173,29 +176,61 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
         f"{mine['window_block_id'].nunique()} window blocks on {dev}; features={features}")
     started = time.time()
     out_rows, en_queue, bs_pending = [], [], []
+    # Batches in flight, oldest first: (rows, future of the solve). A solve
+    # returns one future per unit, finished on the finisher thread. The GPU
+    # starts the next batch while the previous one is being finished; at most
+    # two batches are in flight.
+    en_inflight = []
+    solver = ThreadPoolExecutor(1)
+    # One thread: finishing a unit is mostly Python, so more threads only
+    # contend for the GIL (measured slower at 4 and 16).
+    finisher = ThreadPoolExecutor(1)
 
-    def flush_en(force=False):
-        nonlocal en_queue
-        if not en_queue or (not force and sum(len(p.problems) for _, p in en_queue)
-                            < batch_units * 180):
-            return
-        problems = [q for _, p in en_queue for q in p.problems]
+    def finalize_one(prep, fits):
+        try:
+            return finalize_crossfit(prep, fits)["metrics"]
+        except Exception as err:
+            return err
+
+    def solve(batch):
+        problems = [q for _, p in batch for q in p.problems]
         fits = fit_paths(problems, device=dev, threads=cpu_threads)
-        k = 0
-        for row, prep in en_queue:
+        futures, k = [], 0
+        for _, prep in batch:
             m = len(prep.problems)
-            try:
-                en = finalize_crossfit(prep, fits[k:k + m])["metrics"]
+            futures.append(finisher.submit(finalize_one, prep, fits[k:k + m]))
+            k += m
+        return futures         # each unit's fits are freed once it is finished
+
+    def finished(entry):
+        return entry[1].done() and all(f.done() for f in entry[1].result())
+
+    def harvest_oldest():
+        rows, future = en_inflight.pop(0)
+        for row, unit in zip(rows, future.result()):
+            en = unit.result()
+            if isinstance(en, Exception):
+                if is_environment_error(en):
+                    raise en
+                row.update(en_converged=False, feature_error=f"EN: {en}")
+            else:
                 row.update(rho2_oof=en["rho2_oof"], r2_oof=en["r2_oof"],
                            covariance_ratio_oof=en["covariance_ratio_oof"],
                            score_variance_ratio_oof=en["score_variance_ratio_oof"],
                            en_converged=True)
-            except Exception as err:
-                if is_environment_error(err):
-                    raise
-                row.update(en_converged=False, feature_error=f"EN: {err}")
-            k += m
-        en_queue = []
+
+    def flush_en(force=False):
+        nonlocal en_queue
+        while en_inflight and finished(en_inflight[0]):
+            harvest_oldest()
+        if en_queue and (force or sum(len(p.problems) for _, p in en_queue)
+                         >= batch_units * 180):
+            while len(en_inflight) >= 2:
+                harvest_oldest()
+            en_inflight.append(([r for r, _ in en_queue], solver.submit(solve, en_queue)))
+            en_queue = []
+        while force and en_inflight:
+            harvest_oldest()
 
     def emit(force=False):
         nonlocal out_rows, bs_pending
@@ -208,6 +243,8 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
                 still.append((row, fut))
         bs_pending = still
         pending_ids = {id(r) for r, _ in bs_pending} | {id(r) for r, _ in en_queue}
+        for rows, _ in en_inflight:
+            pending_ids |= {id(r) for r in rows}
         ready = [r for r in out_rows if id(r) not in pending_ids]
         if ready and (force or len(ready) >= 256):
             frame = pd.DataFrame(ready)
@@ -240,6 +277,8 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
                          feature_error=f"{type(err).__name__}: {err}")
         emit()
     emit(force=True)
+    solver.shutdown()
+    finisher.shutdown()
     if pool is not None:
         pool.shutdown()
     log(f"[sites shard {shard}] done in {time.time() - started:.1f}s")

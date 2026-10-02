@@ -46,6 +46,16 @@ Guidelines for low GPU cost:
   1,500 screened SNPs and n ≈ 150, each batched locus needs about 0.3 GiB on
   the GPU and 0.5 GiB of host RAM. A batch of 32 loci therefore fits a 20 GB
   MIG slice and a 48 GB job, but a batch of 120 does not.
+* **Keep the GPU fed** (``sites run``). After the GPU solves a batch, each
+  unit's cross-validation summary and held-out predictions run on the CPU.
+  ``sites run`` does this on a background thread while the GPU solves the
+  next batch and the main thread prepares the one after, so a GPU job needs
+  only about three busy cores plus any ``--gemma-workers``. Results are
+  bitwise identical to a serial run. On 5,000 CpH units (A100, batch 64) this
+  took a run from 1.33 to 2.52 units/s, after which the GPU was busy 98% of
+  the time. Because up to three batches are in host memory at once (one
+  solving, one finishing, one being prepared), allow about 0.8 GiB of host
+  RAM per batched unit instead of 0.5: the batch-64 run peaked at 52 GiB.
 * **No GPU at all** — ``--device cpu`` runs the same code with numba threads
   (``--cpu-threads``); the CPU solver is as fast per path as R's glmnet.
 * **Measure.** ``examples/bench_lgv.py`` times loci/s for CPU and GPU on your
