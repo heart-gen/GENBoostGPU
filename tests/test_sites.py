@@ -95,3 +95,39 @@ def test_genome_wide_fileset_matches_per_chromosome(tmp_path):
         assert list(va["snp"]) == list(vb["snp"])
         assert va["snp"].str.startswith(f"c{chrom.removeprefix('chr')}_").all()
     assert list(gw.samples("2")["IID"]) == ids
+
+
+def test_sites_en_batches_in_flight_match_one_batch(toy_sites):
+    """Solving and finishing batches on background threads (one unit per
+    batch, several finisher threads) gives the rows of one serial batch."""
+    tmp, _, _ = toy_sites
+    out = {}
+    for tag, extra in (("one", ["--batch-units", "64"]),
+                       ("many", ["--batch-units", "1", "--cpu-threads", "3"])):
+        run = tmp / f"run_{tag}"
+        main(["sites", "init", "--run-dir", str(run), "--run-id", "toy-sites-en",
+              "--units-dir", str(tmp / "units"), "--genotypes", str(tmp / "g.chr{chrom}"),
+              "--covariates", str(tmp / "covs.tsv"), "--numeric-covariates", "age",
+              "--cohort", "toy", "--region", "x", "--features", "geometry,he,en",
+              "--window-block-bp", "50000", "--min-cis-variants", "30"])
+        main(["sites", "run", "--run-dir", str(run), "--device", "cpu"] + extra)
+        main(["lgv", "combine", "--run-dir", str(run), "--no-score"])
+        out[tag] = pd.read_csv(run / "results" / "combined" / "observed-joint-features.tsv",
+                               sep="\t").set_index("task_id").sort_index()
+    cols = ["terminal_status", "he_h2", "rho2_oof", "r2_oof", "covariance_ratio_oof",
+            "score_variance_ratio_oof"]
+    assert out["one"]["rho2_oof"].notna().all()
+    pd.testing.assert_frame_equal(out["one"][cols], out["many"][cols], check_exact=True)
+
+
+def test_read_pvar_types(tmp_path):
+    from genboostgpu.io.genotype import read_pvar
+
+    (tmp_path / "g.pvar").write_text(
+        "##fileformat=PVARv1.0\n##source=test\n#CHROM\tPOS\tID\tREF\tALT\n"
+        "chr1\t833068\t00123\tG\tA\n1\t1057648\trs1\tT\t.\n")
+    v = read_pvar(str(tmp_path / "g"))
+    assert list(v.columns) == ["chrom", "pos", "snp", "ref", "alt"]
+    assert v["pos"].dtype == np.int64 and v["pos"].tolist() == [833068, 1057648]
+    assert v["snp"].tolist() == ["00123", "rs1"]       # IDs stay strings
+    assert v["chrom"].tolist() == ["chr1", "1"]
