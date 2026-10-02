@@ -4,6 +4,14 @@ Changelog
 Full release notes live on `GitHub <https://github.com/heart-gen/GENBoostGPU/releases>`_.
 The highlights below summarise major updates.
 
+Unreleased
+   * **GEMMA OpenBLAS kernel pinned** (``bslmm.blas_coretype``, default
+     ``SkylakeX``): GEMMA's OpenBLAS picks its kernel from the CPU and fell
+     back to a generic one on quest13 nodes, moving ``bslmm_pve`` by up to
+     1.3e-3 against sealed runs. A CPU without AVX-512 now stops the shard
+     instead of silently changing the numbers.
+   * ``fit_bslmm_pve`` accepts a relative ``work_dir``.
+
 v0.4.0
    * **New engine for the manuscript endpoints** (``genboostgpu.lgv``,
      ``genboostgpu.lsp``, ``genboostgpu.sites``): Module 02 joint-model
