@@ -13,7 +13,7 @@ of glmnet 4.1-10. This module reproduces the R wrappers around it:
   ``lambda.min``/``lambda.1se`` exactly as ``getOptcv.glmnet``.
 
 Problems can be solved one at a time on the CPU (``numba.njit``) or many at
-once on the GPU (one CUDA thread per problem) through :func:`fit_paths`.
+once on the GPU (one warp per problem) through :func:`fit_paths`.
 """
 from __future__ import annotations
 
@@ -63,7 +63,10 @@ class GlmnetProblem:
     maxit: int = 100000
     type_gaussian: str | None = None
 
-    def resolved(self):
+    def resolved(self, x_finite=None):
+        """Checked inputs and solver settings. ``x_finite``: whether x is
+        known to be finite (callers sharing one x across problems check it
+        once); None checks here."""
         x = np.asarray(self.x, dtype=np.float64)
         y = np.asarray(self.y, dtype=np.float64).ravel()
         if x.ndim != 2:
@@ -73,7 +76,9 @@ class GlmnetProblem:
             raise GlmnetError("x should be a matrix with 2 or more columns")
         if y.size != n:
             raise GlmnetError("number of observations in y not equal to rows of x")
-        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+        if x_finite is None:
+            x_finite = bool(np.all(np.isfinite(x)))
+        if not (x_finite and np.all(np.isfinite(y))):
             raise GlmnetError("x or y has missing or infinite values")
         ybar = y.mean() if self.intercept else 0.0
         if np.sum((y - ybar) ** 2) == 0:
@@ -106,10 +111,18 @@ class GlmnetProblem:
 
 @dataclass
 class GlmnetFit:
-    """The parts of an R ``elnet`` object the pipeline uses."""
+    """The parts of an R ``elnet`` object the pipeline uses.
+
+    Coefficients are stored for the variables that are nonzero somewhere on
+    the path only (``rows``, ascending; ``beta_rows`` is len(rows) x L); every
+    other row of R's dense ``beta`` is zero. ``beta`` builds the dense p x L
+    matrix on first use.
+    """
 
     a0: np.ndarray
-    beta: np.ndarray          # p x L (dense)
+    rows: np.ndarray
+    beta_rows: np.ndarray
+    nvars: int
     lambda_: np.ndarray
     dev_ratio: np.ndarray
     df: np.ndarray
@@ -117,6 +130,13 @@ class GlmnetFit:
     npasses: int
     jerr: int
     nobs: int
+
+    @cached_property
+    def beta(self):
+        """Dense p x L coefficients, as R's ``fit$beta``."""
+        beta = np.zeros((self.nvars, self.lambda_.size))
+        beta[self.rows] = self.beta_rows
+        return beta
 
     def predict(self, newx, index=None):
         """``predict(fit, newx)`` at every lambda (or at column(s) ``index``)."""
@@ -128,10 +148,10 @@ class GlmnetFit:
     def coef(self, index):
         return self.a0[index], self.beta[:, index]
 
-    @cached_property
+    @property
     def _active_rows(self):
         # SNPs nonzero anywhere on the path; every other row of beta is zero
-        return np.flatnonzero(self.beta.any(axis=1))
+        return self.rows
 
     def coef_at(self, s):
         """``coef(fit, s = s)``: intercepts (len(s),) and betas (p, len(s)),
@@ -143,10 +163,10 @@ class GlmnetFit:
         # the result is identical to interpolating all p rows. Column-major,
         # like the fancy-indexed full interpolation: the BLAS product in
         # predict_at rounds differently for the two layouts.
-        beta = np.zeros((self.beta.shape[0], s.size), order="F")
-        rows = self._active_rows
+        beta = np.zeros((self.nvars, s.size), order="F")
+        rows = self.rows
         if rows.size:
-            b = self.beta[rows]
+            b = self.beta_rows
             beta[rows] = b[:, left] * frac + b[:, right] * (1.0 - frac)
         return a0, beta
 
@@ -280,20 +300,27 @@ def _finish(spec, prob, out) -> GlmnetFit:
     nulldev = float(np.sum((y - ybar) ** 2) / y.size)
     if lmu < 1:
         raise GlmnetError("an empty model has been returned; probably a convergence issue")
-    beta = np.zeros((p, lmu))
-    ia = out["ia"]
-    for m in range(lmu):
-        nk = int(out["kin"][m])
-        col = out["ca"][m * nx:m * nx + nk]
-        beta[ia[:nk], m] = col
+    # compressed path: lambda m holds the first kin[m] entries of its row of
+    # ca, the coefficients of variables ia[0:kin[m]]; ca's row stride is nx,
+    # or the solver's compacted width (``ca_stride``)
+    kin = out["kin"][:lmu]
+    stride = int(out.get("ca_stride", nx))
+    nk = int(kin.max())
+    ca = out["ca"][:lmu * stride].reshape(lmu, stride)[:, :nk]
+    vals = np.where(np.arange(nk)[None, :] < kin[:, None], ca, 0.0)
+    nzm = vals != 0.0
+    nz = nzm.any(axis=0)
+    ia = out["ia"][:nk][nz]
+    order = np.argsort(ia)
     lam = out["almo"][:lmu].copy()
     if not spec["user_lambda"] and lam.size > 2:
         llam = np.log(lam)
         lam[0] = math.exp(2 * llam[1] - llam[2])
-    df = np.count_nonzero(beta, axis=0)
-    return GlmnetFit(a0=out["a0"][:lmu].copy(), beta=beta, lambda_=lam,
-                     dev_ratio=out["rsqo"][:lmu].copy(), df=df, nulldev=nulldev,
-                     npasses=nlp, jerr=jerr, nobs=spec["n"])
+    df = nzm.sum(axis=1)
+    return GlmnetFit(a0=out["a0"][:lmu].copy(), rows=ia[order],
+                     beta_rows=np.ascontiguousarray(vals[:, nz][:, order].T), nvars=p,
+                     lambda_=lam, dev_ratio=out["rsqo"][:lmu].copy(), df=df,
+                     nulldev=nulldev, npasses=nlp, jerr=jerr, nobs=spec["n"])
 
 
 def _solve_cpu(prob: GlmnetProblem) -> GlmnetFit:

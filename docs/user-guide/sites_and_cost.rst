@@ -41,21 +41,28 @@ Guidelines for low GPU cost:
 * **Keep MCMC off the GPU clock.** GEMMA runs on CPU cores: either inline on
   the GPU node's idle cores (``--gemma-workers``) or in a separate CPU array
   (``--bslmm separate``).
-* **Size memory to the batch.** Memory is dominated by the path output, which
-  is p × 100 coefficients per problem (glmnet's default ``pmax`` is p). At
-  1,500 screened SNPs and n ≈ 150, each batched locus needs about 0.3 GiB on
-  the GPU and 0.5 GiB of host RAM. A batch of 32 loci therefore fits a 20 GB
-  MIG slice and a 48 GB job, but a batch of 120 does not.
+* **Size memory to the batch.** GPU memory is dominated by the path output
+  buffer, which holds p × 100 coefficients per problem (glmnet's default
+  ``pmax`` is p). At 1,500 screened SNPs and n ≈ 150, each batched locus needs
+  about 0.3 GiB on the GPU, so a batch of 32 loci fits a 20 GB MIG slice but a
+  batch of 120 does not. Only the coefficients a path actually uses (its
+  largest active set, typically a few hundred SNPs) are copied back and kept
+  on the host.
 * **Keep the GPU fed** (``sites run``). After the GPU solves a batch, each
   unit's cross-validation summary and held-out predictions run on the CPU.
   ``sites run`` does this on a background thread while the GPU solves the
   next batch and the main thread prepares the one after, so a GPU job needs
   only about three busy cores plus any ``--gemma-workers``. Results are
-  bitwise identical to a serial run. On 5,000 CpH units (A100, batch 64) this
-  took a run from 1.33 to 2.52 units/s, after which the GPU was busy 98% of
-  the time. Because up to three batches are in host memory at once (one
-  solving, one finishing, one being prepared), allow about 0.8 GiB of host
-  RAM per batched unit instead of 0.5: the batch-64 run peaked at 52 GiB.
+  bitwise identical to a serial run. On 5,000 CpH units (A100, batch 64, 128
+  donors) a run takes 961 s (5.2 units/s, about 53 GPU-hours per million
+  units). Up to three batches are in host memory at once (one solving, one
+  finishing, one being prepared); allow about 0.3 GiB of host RAM per batched
+  unit (the batch-64 run peaked at 17 GiB).
+* **Budget GEMMA separately.** BSLMM costs about 5–8 CPU-seconds per unit at
+  the median and 11–20 on average (Module 02 cells, n = 55–153), roughly 90
+  times the GPU time per unit. One GPU therefore outpaces dozens of inline
+  GEMMA workers; at scale use ``--bslmm separate`` and size the CPU array
+  from about 4,000 CPU-hours per million units.
 * **No GPU at all** — ``--device cpu`` runs the same code with numba threads
   (``--cpu-threads``); the CPU solver is as fast per path as R's glmnet.
 * **Measure.** ``examples/bench_lgv.py`` times loci/s for CPU and GPU on your

@@ -15,6 +15,16 @@ problem**:
 * problems that share a design matrix (the alphas of one fold) share one
   device copy: ``prep_kernel`` (one warp per distinct matrix) runs Chkvars
   and standardizes it in place once, and the path kernel only reads it;
+* the coordinate loop is latency-bound (one warp per problem leaves few warps
+  per SM to hide memory latency), so in naive mode the residual lives in
+  shared memory and each lane holds its slice of the current ``x`` column in
+  registers (``NC`` = ceil(max n / 32) values, a compile-time constant), used
+  for both the gradient and the residual update. The next coordinate's column
+  and scalars (``A``, ``XV``, ``XS``) are loaded while the current one is
+  processed, and the index after it one step earlier (the GPU issues
+  instructions in order, so a load is only hidden if nothing uses it until
+  later): active variables in partial passes, a compact ascending
+  strong-set list ``SL`` in full passes;
 * global read-modify-write updates (``-=``, ``*=``) are made only by the
   lane that owns the element, never redundantly by all 32 lanes, since lanes
   of a warp are not guaranteed to run in lockstep.
@@ -31,18 +41,21 @@ import math
 
 import numpy as np
 
-from .glmnet import GlmnetError, GlmnetProblem, _BIG, _DEVMAX, _EPS, _FDEV, _MNLAM, _finish
+from .glmnet import (GlmnetError, GlmnetProblem, _BIG, _DEVMAX, _EPS, _FDEV, _MNLAM, _finish,
+                     _solve_cpu_safe)
 
 __all__ = ["solve_batch_gpu", "WARPS_PER_BLOCK"]
 
-WARPS_PER_BLOCK = 4
+WARPS_PER_BLOCK = 1   # a block's slots are held until its slowest warp ends
+_SHARED_BYTES = 48 * 1024   # static shared memory per block
 _FULL = 0xFFFFFFFF
-_kernel = None
+_kernels = {}
 cuda = None  # numba.cuda, bound on first use (a module global so the CUDA
              # simulator can substitute its own namespace in tests)
 
 
-def _build_kernel():
+def _build_kernel(NC, WPB):
+    """Kernels for problems with n <= 32 * NC, launched with WPB warps per block."""
     global cuda
     from numba import cuda as _cuda
 
@@ -58,18 +71,84 @@ def _build_kernel():
         return v
 
     @cuda.jit(device=True, inline=True)
-    def wdot(X, xa, Y, ya, n, lane):
+    def cload(R, X, xa, n, lane):
+        """Lane's slice of column ``X[xa:xa + n]`` (samples lane + 32c) into R."""
+        for c in range(NC):
+            i = lane + 32 * c
+            R[c] = X[xa + i] if i < n else 0.0
+
+    @cuda.jit(device=True, inline=True)
+    def cdot(R, Y, ya, n, lane):
+        """Warp dot product of a register-held column with ``Y``: each lane
+        sums its samples in order, then the butterfly."""
         s = 0.0
-        for i in range(lane, n, 32):
-            s += X[xa + i] * Y[ya + i]
+        for c in range(NC):
+            i = lane + 32 * c
+            if i < n:
+                s += R[c] * Y[ya + i]
         return wsum(s)
 
+    @cuda.jit(device=True, inline=True)
+    def cupd(R, Y, ya, diff, n, lane):
+        for c in range(NC):
+            i = lane + 32 * c
+            if i < n:
+                Y[ya + i] -= diff * R[c]
+
+    @cuda.jit(device=True, inline=True)
+    def strong_list(IX, po, p, SL, lane):
+        """Compact ascending list of strong variables (IX != 0); returns its length."""
+        ns = 0
+        for base in range(0, p, 32):
+            k = base + lane
+            f = k < p and IX[po + k] != 0
+            m = cuda.ballot_sync(_FULL, f)
+            if f:
+                SL[po + ns + cuda.popc(m & ((1 << lane) - 1))] = k
+            ns += cuda.popc(m)
+        cuda.syncwarp(_FULL)
+        return ns
+
+    @cuda.jit(device=True, inline=True)
+    def ldot(X, xa, Y, ya, n):
+        """One lane's sum_i X[xa + i] * Y[ya + i] in Eigen's order (as
+        :func:`~genboostgpu.lgv.glmnet_core.edot`). Used where the warp has
+        many independent dot products: each lane takes its own column, which
+        avoids a butterfly reduction per column."""
+        if n <= 0:
+            return 0.0
+        if n < 2:
+            return X[xa] * Y[ya]
+        al = (n // 2) * 2
+        al2 = (n // 4) * 4
+        s0 = X[xa] * Y[ya]
+        s1 = X[xa + 1] * Y[ya + 1]
+        if al > 2:
+            s2 = X[xa + 2] * Y[ya + 2]
+            s3 = X[xa + 3] * Y[ya + 3]
+            for i in range(4, al2, 4):
+                s0 += X[xa + i] * Y[ya + i]
+                s1 += X[xa + i + 1] * Y[ya + i + 1]
+                s2 += X[xa + i + 2] * Y[ya + i + 2]
+                s3 += X[xa + i + 3] * Y[ya + i + 3]
+            s0 = s0 + s2
+            s1 = s1 + s3
+            if al > al2:
+                s0 += X[xa + al2] * Y[ya + al2]
+                s1 += X[xa + al2 + 1] * Y[ya + al2 + 1]
+        res = s0 + s1
+        for i in range(al, n):
+            res += X[xa + i] * Y[ya + i]
+        return res
+
     @cuda.jit
-    def prep_kernel(U, X, n_arr, p_arr, isd_arr, x_off, s_off, JU, XM, XS, XV):
+    def prep_kernel(U, XR, X, n_arr, p_arr, isd_arr, x_off, s_off, JU, XM, XS, XV):
         """Chkvars + Standardize1's x part, one warp per distinct matrix.
 
         Problems that share a matrix (the alphas of one fold) share its
         standardized copy and column statistics, which depend only on x.
+        Matrices arrive row-major in ``XR`` (a plain copy on the host) and are
+        transposed here into the column-major ``X`` the path kernel reads.
         """
         tid = cuda.threadIdx.x
         lane = tid % 32
@@ -81,6 +160,10 @@ def _build_kernel():
         isd = isd_arr[u]
         xo = x_off[u]
         po = s_off[u]
+        for j in range(p):
+            for i in range(lane, n, 32):
+                X[xo + j * n + i] = XR[xo + i * p + j]
+        cuda.syncwarp(_FULL)
         for j in range(p):
             t = X[xo + j * n]
             d = False
@@ -123,15 +206,22 @@ def _build_kernel():
                     XV[po + j] = ss
             cuda.syncwarp(_FULL)
 
+    NMAX = 32 * NC
+    NSH = WPB * NMAX   # shared-array shapes must be compile-time constants
+
     @cuda.jit
     def kernel(B, X, Y, n_arr, p_arr, nlam_arr, nx_arr, naive_arr, alpha_arr,
                flmin_arr, isd_arr, x_off, y_off, p_off, lam_off, nx_off, ca_off, c_off,
                s_off, ULAM, thr, maxit, eps, big, mnlam, sml, rsqmax,
                A0, CA, IA, KIN, RSQO, ALMO, INTS, DBL,
-               XM, XS, XV, JU, G, A, MM, IX, DA, CG):
+               XM, XS, XV, JU, G, A, MM, IX, DA, CG, SL):
         tid = cuda.threadIdx.x
         lane = tid % 32
-        b = cuda.blockIdx.x * (cuda.blockDim.x // 32) + tid // 32
+        Ysh = cuda.shared.array(NSH, np.float64)
+        cur = cuda.local.array(NC, np.float64)
+        nxt = cuda.local.array(NC, np.float64)
+        ysb = (tid // 32) * NMAX
+        b = cuda.blockIdx.x * WPB + tid // 32
         if b >= B:
             return
         n = n_arr[b]
@@ -182,7 +272,7 @@ def _build_kernel():
             ss += v * v
         ys = math.sqrt(wsum(ss))
         for i in range(lane, n, 32):
-            Y[yo + i] = Y[yo + i] / ys
+            Ysh[ysb + i] = Y[yo + i] / ys
         DBL[2 * b] = ym
         DBL[2 * b + 1] = ys
 
@@ -192,11 +282,10 @@ def _build_kernel():
             MM[po + j] = 0
             IX[po + j] = 0
         cuda.syncwarp(_FULL)
-        for j in range(p):
-            if JU[so + j] == 0:
-                continue
-            s = wdot(X, xo + j * n, Y, yo, n, lane)
-            G[po + j] = abs(s) if naive else s
+        for j in range(lane, p, 32):
+            if JU[so + j] != 0:
+                s = ldot(X, xo + j * n, Ysh, ysb, n)
+                G[po + j] = abs(s) if naive else s
         cuda.syncwarp(_FULL)
 
         # ---- path ----
@@ -211,6 +300,7 @@ def _build_kernel():
         rsq_prev = 0.0
         iz = False
         lmda_curr = 0.0
+        ns = 0
 
         for m in range(nlam):
             alm0 = lmda_curr
@@ -244,6 +334,7 @@ def _build_kernel():
                         if G[po + k] > tlam:
                             IX[po + k] = 1
                 cuda.syncwarp(_FULL)
+                ns = strong_list(IX, po, p, SL, lane)
 
             maxit_hit = False
             maxact_hit = False
@@ -258,20 +349,51 @@ def _build_kernel():
                     while True:
                         nlp += 1
                         dlx = 0.0
+                        kn = 0
+                        knn = 0
+                        an = 0.0
+                        xvn = 0.0
+                        xsn = 0.0
+                        if naive and nin > 0:
+                            kn = IA[nxo]
+                            cload(nxt, X, xo + kn * n, n, lane)
+                            an = A[po + kn]
+                            xvn = XV[so + kn]
+                            xsn = XS[so + kn]
+                            if nin > 1:
+                                knn = IA[nxo + 1]
                         for l in range(nin):
-                            k = IA[nxo + l]
-                            old = A[po + k]
                             gk = 0.0
                             if naive:
-                                gk = wdot(X, xo + k * n, Y, yo, n, lane)
+                                # the next variable's column and scalars are
+                                # loaded now and its index one step earlier,
+                                # so no load is waited on in the loop body
+                                k = kn
+                                old = an
+                                xvk = xvn
+                                xsk = xsn
+                                for c in range(NC):
+                                    cur[c] = nxt[c]
+                                if l + 1 < nin:
+                                    kn = knn
+                                    if l + 2 < nin:
+                                        knn = IA[nxo + l + 2]
+                                    cload(nxt, X, xo + kn * n, n, lane)
+                                    an = A[po + kn]
+                                    xvn = XV[so + kn]
+                                    xsn = XS[so + kn]
+                                gk = cdot(cur, Ysh, ysb, n, lane)
                             else:
+                                k = IA[nxo + l]
+                                old = A[po + k]
                                 gk = G[po + k]
-                            xvk = XV[so + k]
+                                xvk = XV[so + k]
+                                xsk = XS[so + k]
                             u = gk + old * xvk
                             v = abs(u) - ab
                             new = 0.0
                             if v > 0.0:
-                                lim = big / ys * XS[so + k]
+                                lim = big / ys * xsk
                                 t = math.copysign(v, u) / (xvk + dem)
                                 if t > lim:
                                     t = lim
@@ -288,8 +410,7 @@ def _build_kernel():
                                 dlx = d2
                             rsq += diff * (2.0 * gk - diff * xvk)
                             if naive:
-                                for i in range(lane, n, 32):
-                                    Y[yo + i] -= diff * X[xo + k * n + i]
+                                cupd(cur, Ysh, ysb, diff, n, lane)
                             else:
                                 ck = MM[po + k] - 1
                                 for l2 in range(lane, nin, 32):
@@ -324,25 +445,52 @@ def _build_kernel():
                         break
                     nlp += 1
                     dlx = 0.0
-                    for k in range(p):
-                        if naive:
-                            if IX[po + k] == 0:
-                                continue
-                        else:
-                            if JU[so + k] == 0:
-                                continue
-                        old = A[po + k]
+                    kn = 0
+                    knn = 0
+                    an = 0.0
+                    xvn = 0.0
+                    xsn = 0.0
+                    if naive and ns > 0:
+                        kn = SL[po]
+                        cload(nxt, X, xo + kn * n, n, lane)
+                        an = A[po + kn]
+                        xvn = XV[so + kn]
+                        xsn = XS[so + kn]
+                        if ns > 1:
+                            knn = SL[po + 1]
+                    for q in range(ns if naive else p):
                         gk = 0.0
                         if naive:
-                            gk = wdot(X, xo + k * n, Y, yo, n, lane)
+                            # the strong set in ascending order, as the full
+                            # scan over IX; prefetched as in partial passes
+                            k = kn
+                            old = an
+                            xvk = xvn
+                            xsk = xsn
+                            for c in range(NC):
+                                cur[c] = nxt[c]
+                            if q + 1 < ns:
+                                kn = knn
+                                if q + 2 < ns:
+                                    knn = SL[po + q + 2]
+                                cload(nxt, X, xo + kn * n, n, lane)
+                                an = A[po + kn]
+                                xvn = XV[so + kn]
+                                xsn = XS[so + kn]
+                            gk = cdot(cur, Ysh, ysb, n, lane)
                         else:
+                            k = q
+                            if JU[so + k] == 0:
+                                continue
                             gk = G[po + k]
-                        xvk = XV[so + k]
+                            old = A[po + k]
+                            xvk = XV[so + k]
+                            xsk = XS[so + k]
                         u = gk + old * xvk
                         v = abs(u) - ab
                         new = 0.0
                         if v > 0.0:
-                            lim = big / ys * XS[so + k]
+                            lim = big / ys * xsk
                             t = math.copysign(v, u) / (xvk + dem)
                             if t > lim:
                                 t = lim
@@ -364,7 +512,7 @@ def _build_kernel():
                             cuda.syncwarp(_FULL)
                             if not naive:
                                 col = nin - 1
-                                for j in range(p):
+                                for j in range(lane, p, 32):
                                     if JU[so + j] == 0:
                                         continue
                                     cv = 0.0
@@ -373,7 +521,7 @@ def _build_kernel():
                                     elif MM[po + j] != 0:
                                         cv = CG[co + (MM[po + j] - 1) * p + k]
                                     else:
-                                        cv = wdot(X, xo + j * n, X, xo + k * n, n, lane)
+                                        cv = ldot(X, xo + j * n, X, xo + k * n, n)
                                     CG[co + col * p + j] = cv
                                 cuda.syncwarp(_FULL)
                         diff = new - old
@@ -382,8 +530,7 @@ def _build_kernel():
                             dlx = d2
                         rsq += diff * (2.0 * gk - diff * xvk)
                         if naive:
-                            for i in range(lane, n, 32):
-                                Y[yo + i] -= diff * X[xo + k * n + i]
+                            cupd(cur, Ysh, ysb, diff, n, lane)
                         else:
                             ck = MM[po + k] - 1
                             for j in range(lane, p, 32):
@@ -396,11 +543,11 @@ def _build_kernel():
                         if not naive:
                             done = True
                             break
-                        for k in range(p):
+                        cuda.syncwarp(_FULL)   # every lane reads the whole residual
+                        for k in range(lane, p, 32):
                             if IX[po + k] != 0 or JU[so + k] == 0:
                                 continue
-                            s = wdot(X, xo + k * n, Y, yo, n, lane)
-                            G[po + k] = abs(s)
+                            G[po + k] = abs(ldot(X, xo + k * n, Ysh, ysb, n))
                         cuda.syncwarp(_FULL)
                         updated = False
                         for k in range(p):
@@ -414,6 +561,7 @@ def _build_kernel():
                         if not updated:
                             done = True
                             break
+                        ns = strong_list(IX, po, p, SL, lane)
                         continue
                     if nlp > maxit:
                         maxit_hit = True
@@ -468,11 +616,44 @@ def _build_kernel():
     return prep_kernel, kernel
 
 
-def _get_kernel():
-    global _kernel
-    if _kernel is None:
-        _kernel = _build_kernel()
-    return _kernel
+_compact_kernel = None
+
+
+def _get_compact_kernel():
+    """Copies each problem's used block of CA (lmu rows x W columns, W = its
+    largest active-set size) into a dense buffer, so only that is downloaded:
+    CA is sized for nx = p active variables per lambda, which is ~10x what a
+    path uses."""
+    global _compact_kernel, cuda
+    if _compact_kernel is None:
+        from numba import cuda as _cuda
+
+        cuda = _cuda
+
+        @cuda.jit
+        def compact(B, CA, ca_off, nx_arr, INTS, W, cc_off, OUT):
+            tid = cuda.threadIdx.x
+            lane = tid % 32
+            b = cuda.blockIdx.x * (cuda.blockDim.x // 32) + tid // 32
+            if b >= B:
+                return
+            w = W[b]
+            nx = nx_arr[b]
+            cao = ca_off[b]
+            o = cc_off[b]
+            for t in range(lane, INTS[3 * b] * w, 32):
+                m = t // w
+                OUT[o + t] = CA[cao + m * nx + (t - m * w)]
+
+        _compact_kernel = compact
+    return _compact_kernel
+
+
+def _get_kernel(nc: int, wpb: int):
+    key = (nc, wpb)
+    if key not in _kernels:
+        _kernels[key] = _build_kernel(nc, wpb)
+    return _kernels[key]
 
 
 def solve_batch_gpu(problems, warps_per_block: int = WARPS_PER_BLOCK, xp=None):
@@ -493,13 +674,21 @@ def solve_batch_gpu(problems, warps_per_block: int = WARPS_PER_BLOCK, xp=None):
     results = [None] * len(problems)
     specs = []
     idx = []
+    nmax_gpu = _SHARED_BYTES // 8   # one warp's residual must fit in shared memory
+    x_finite = {}   # the alphas of a fold share x: check it once
     for i, prob in enumerate(problems):
         if not prob.intercept:
             raise ValueError("GPU solver supports intercept=TRUE only")
         try:
-            spec = prob.resolved()
+            fin = x_finite.get(id(prob.x))
+            if fin is None:
+                fin = x_finite[id(prob.x)] = bool(np.all(np.isfinite(prob.x)))
+            spec = prob.resolved(x_finite=fin)
         except GlmnetError as err:
             results[i] = err
+            continue
+        if spec["n"] > nmax_gpu:
+            results[i] = _solve_cpu_safe(prob)
             continue
         spec["y_orig"] = spec["y"]
         specs.append(spec)
@@ -550,9 +739,6 @@ def solve_batch_gpu(problems, warps_per_block: int = WARPS_PER_BLOCK, xp=None):
     ca_off = offsets(nx_arr * nlam_arr)
     c_off = offsets(np.where(naive_arr == 1, 1, p_arr * nx_arr))
 
-    Xh = np.empty(int(ux_off[-1]))
-    for u, m in enumerate(umats):
-        Xh[ux_off[u]:ux_off[u + 1]] = m.ravel(order="F")
     Yh = np.empty(int(y_off[-1]))
     ULAMh = np.zeros(int(lam_off[-1]))
     for b, s in enumerate(specs):
@@ -561,13 +747,35 @@ def solve_batch_gpu(problems, warps_per_block: int = WARPS_PER_BLOCK, xp=None):
             ULAMh[lam_off[b]:lam_off[b] + s["nlam"]] = s["ulam"]
 
     d = cp.asarray
-    X = d(Xh)
-    del Xh
+    nc = int(-(-n_arr.max() // 32))
+    wpb = max(1, min(warps_per_block, _SHARED_BYTES // (32 * nc * 8)))
+    prep_kernel, kernel = _get_kernel(nc, wpb)
+    tpb = 32 * wpb
+    # each matrix is copied row-major straight into its slice of the device
+    # buffer (a host staging buffer this size costs seconds in page faults)
+    XR = cp.empty(int(ux_off[-1]))
+    for u, m in enumerate(umats):
+        m = np.ascontiguousarray(m).ravel()
+        if hasattr(XR, "set"):
+            XR[ux_off[u]:ux_off[u + 1]].set(m)
+        else:
+            XR[ux_off[u]:ux_off[u + 1]] = m
+    X = cp.empty_like(XR)
+    nus = int(us_off[-1])
+    XM = cp.zeros(nus)
+    XS = cp.zeros(nus)
+    XV = cp.zeros(nus)
+    JU = cp.zeros(nus, cp.int8)
+    prep_kernel[(U + wpb - 1) // wpb, tpb](
+        U, XR, X, d(un_arr), d(up_arr), d(np.array(uisd, np.int64)), d(ux_off), d(us_off),
+        JU, XM, XS, XV)
+    if hasattr(cp, "cuda"):
+        cp.cuda.runtime.deviceSynchronize()
+    del XR   # before the path outputs are allocated: no rise in peak memory
     Y = d(Yh)
     ULAM = d(ULAMh)
     nl = int(lam_off[-1])
     np_ = int(p_off[-1])
-    nus = int(us_off[-1])
     nxt = int(nx_off[-1])
     A0 = cp.zeros(nl)
     CA = cp.zeros(int(ca_off[-1]))
@@ -577,37 +785,41 @@ def solve_batch_gpu(problems, warps_per_block: int = WARPS_PER_BLOCK, xp=None):
     ALMO = cp.zeros(nl)
     INTS = cp.zeros(3 * B, cp.int64)
     DBL = cp.zeros(2 * B)
-    XM = cp.zeros(nus)
-    XS = cp.zeros(nus)
-    XV = cp.zeros(nus)
-    JU = cp.zeros(nus, cp.int8)
     G = cp.zeros(np_)
     A = cp.zeros(np_)
     MM = cp.zeros(np_, cp.int64)
     IX = cp.zeros(np_, cp.int8)
     DA = cp.zeros(nxt)
     CG = cp.zeros(int(c_off[-1]))
+    SL = cp.zeros(np_, cp.int64)
 
-    prep_kernel, kernel = _get_kernel()
-    tpb = 32 * warps_per_block
-    prep_kernel[(U + warps_per_block - 1) // warps_per_block, tpb](
-        U, X, d(un_arr), d(up_arr), d(np.array(uisd, np.int64)), d(ux_off), d(us_off),
-        JU, XM, XS, XV)
-    blocks = (B + warps_per_block - 1) // warps_per_block
+    blocks = (B + wpb - 1) // wpb
     kernel[blocks, tpb](
         B, X, Y, d(n_arr), d(p_arr), d(nlam_arr), d(nx_arr), d(naive_arr),
         d(alpha_arr), d(flmin_arr), d(isd_arr), d(x_off), d(y_off), d(p_off), d(lam_off),
         d(nx_off), d(ca_off), d(c_off), d(s_off), ULAM, thr, maxit, _EPS, _BIG, _MNLAM,
         _FDEV, _DEVMAX, A0, CA, IA, KIN, RSQO, ALMO, INTS, DBL,
-        XM, XS, XV, JU, G, A, MM, IX, DA, CG)
+        XM, XS, XV, JU, G, A, MM, IX, DA, CG, SL)
     if hasattr(cp, "cuda"):
         cp.cuda.runtime.deviceSynchronize()
 
-    A0h, CAh, IAh, KINh = host(A0), host(CA), host(IA), host(KIN)
-    RSQOh, ALMOh, INTSh = host(RSQO), host(ALMO), host(INTS)
+    INTSh, KINh = host(INTS), host(KIN)
+    lmu_arr = np.maximum(INTSh[0::3], 0)
+    W = np.zeros(B, np.int64)
+    for b in range(B):
+        if lmu_arr[b] > 0:
+            W[b] = KINh[lam_off[b]:lam_off[b] + lmu_arr[b]].max()
+    cc_off = offsets(lmu_arr * W)
+    CC = cp.zeros(max(int(cc_off[-1]), 1))
+    _get_compact_kernel()[(B + 3) // 4, 128](B, CA, d(ca_off), d(nx_arr), INTS, d(W), d(cc_off), CC)
+    if hasattr(cp, "cuda"):
+        cp.cuda.runtime.deviceSynchronize()
+    del CA
+    A0h, CCh, IAh = host(A0), host(CC), host(IA)
+    RSQOh, ALMOh = host(RSQO), host(ALMO)
     for b, s in enumerate(specs):
         out = dict(
-            a0=A0h[lam_off[b]:lam_off[b + 1]], ca=CAh[ca_off[b]:ca_off[b + 1]],
+            a0=A0h[lam_off[b]:lam_off[b + 1]], ca=CCh[cc_off[b]:cc_off[b + 1]], ca_stride=W[b],
             ia=IAh[nx_off[b]:nx_off[b + 1]], kin=KINh[lam_off[b]:lam_off[b + 1]],
             rsqo=RSQOh[lam_off[b]:lam_off[b + 1]], almo=ALMOh[lam_off[b]:lam_off[b + 1]].copy(),
             ints_out=INTSh[3 * b:3 * b + 3],
