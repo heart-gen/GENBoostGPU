@@ -45,7 +45,10 @@ def test_sites_blocks_match_single_locus(toy_sites):
           "--units-dir", str(tmp / "units"), "--genotypes", str(tmp / "g.chr{chrom}"),
           "--covariates", str(tmp / "covs.tsv"), "--numeric-covariates", "age",
           "--cohort", "toy", "--region", "x", "--features", "geometry,he",
-          "--window-block-bp", "50000", "--min-cis-variants", "30"])
+          "--window-block-bp", "50000", "--min-cis-variants", "30",
+          "--gemma-blas-coretype", "haswell"])
+    import json
+    assert json.load(open(run / "run.json"))["bslmm"]["blas_coretype"] == "Haswell"
     main(["sites", "run", "--run-dir", str(run), "--device", "cpu"])
     main(["lgv", "combine", "--run-dir", str(run), "--no-score"])
     rows = pd.read_csv(run / "results" / "combined" / "observed-joint-features.tsv", sep="\t")

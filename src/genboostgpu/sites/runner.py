@@ -87,7 +87,7 @@ def init_sites_run(run_dir, run_id, cohort, region, units_dir, genotype_pattern,
                    min_cis_variants=100, genotype_id_column="IID", unit_set_id="",
                    chroms=None, bslmm_mode="off", seed_run_id=None, joint_model_path=None,
                    joint_model_sha256=None, support_path=None, support_cell=None,
-                   smoke_run=False):
+                   smoke_run=False, bslmm_settings=None):
     tasks = site_tasks(units_dir, cohort, region, unit_set_id, window_block_bp, chroms)
     source = dict(kind="sites", units_dir=os.path.realpath(units_dir),
                   genotype_pattern=genotype_pattern, covariates=covariates.describe(),
@@ -98,6 +98,7 @@ def init_sites_run(run_dir, run_id, cohort, region, units_dir, genotype_pattern,
                   genotype_id_column=genotype_id_column, features=list(features))
     cfg = RunConfig(run_id=run_id, cohort=cohort, region=region, source=source,
                     seed_run_id=seed_run_id, bslmm_mode=bslmm_mode,
+                    bslmm=bslmm_settings or BslmmSettings().as_dict(),
                     joint_model_path=joint_model_path,
                     joint_model_source_sha256=joint_model_sha256,
                     support_path=support_path, support_cell=support_cell or cohort,

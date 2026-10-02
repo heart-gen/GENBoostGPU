@@ -78,10 +78,9 @@ Fidelity to R
   the CPU: ``SkylakeX`` on quest10 nodes, where the sealed R runs ran, but the
   generic ``Prescott`` fallback on quest13 (Xeon 8592+, a CPU 0.3.9 does not
   know). The two differ by up to 1.3e-3 in ``bslmm_pve``. GENBoostGPU pins the
-  kernel with ``OPENBLAS_CORETYPE`` (``bslmm.blas_coretype`` in ``run.json``,
-  default ``SkylakeX``) and refuses to start GEMMA on a CPU without AVX-512;
-  set it to ``auto`` (or ``Haswell``) to run on such nodes, at the cost of
-  comparability with sealed runs. With the pin, ``bslmm_pve`` matches the
+  kernel with ``OPENBLAS_CORETYPE`` (``--gemma-blas-coretype``, default
+  ``SkylakeX``; see :ref:`gemma-blas-kernel`) and refuses to start GEMMA on a
+  CPU without AVX-512. With the pin, ``bslmm_pve`` matches the
   sealed ``lgv-all_individuals.EA-caudate-20260917`` values to 1e-16 on both
   node types.
 
@@ -184,3 +183,74 @@ while the GPU solves the elastic net; ``--bslmm separate`` defers them to a
 CPU-only array (``genboostgpu lgv bslmm``) so GPU allocations never wait on
 MCMC; ``--bslmm off`` produces features only (``terminal_status =
 features_only``) and no score.
+
+.. _gemma-blas-kernel:
+
+GEMMA's OpenBLAS kernel (``--gemma-blas-coretype``)
+---------------------------------------------------
+
+**How it works.** The GEMMA binary the pipeline uses
+(``/projects/p32505/opt/bin/gemma``, GEMMA 0.98.5) is statically linked
+against OpenBLAS 0.3.9 built with ``DYNAMIC_ARCH``: it carries one set of
+linear-algebra kernels per CPU family and chooses one when it starts, from the
+CPU it finds. The environment variable ``OPENBLAS_CORETYPE`` overrides that
+choice. ``genboostgpu lgv init`` and ``genboostgpu sites init`` take
+``--gemma-blas-coretype KERNEL``, store it in ``run.json`` as
+``bslmm.blas_coretype``, and every GEMMA chain of the run is started with
+``OPENBLAS_CORETYPE=KERNEL``. ``auto`` sets nothing and leaves the choice to
+OpenBLAS. The default is ``SkylakeX``.
+
+**Why it matters.** The kernels compute the same quantities but round
+differently, and BSLMM's MCMC carries those last-bit differences forward: the
+sampled ``h`` chain is unchanged, but ``bslmm_pve`` moves by up to ~1e-3
+between kernels (median ~1e-6). That is far below its posterior uncertainty,
+but it means two runs on different hardware are not identical. The sealed
+``dna-methylation-heritability`` Module 02 runs ran on Quest ``quest10`` nodes,
+where OpenBLAS picks ``SkylakeX``. On ``quest13`` nodes (Xeon 8592+, a CPU
+OpenBLAS 0.3.9 does not recognise) it falls back to the generic ``Prescott``
+kernel, and a replay of ``lgv-all_individuals.EA-caudate-20260917`` differed on
+every locus run there. Pinning ``SkylakeX`` made both node types reproduce the
+sealed values to 1e-16.
+
+**Which CPUs can run it.** ``SkylakeX`` needs AVX-512 (``avx512f``, ``cd``,
+``bw``, ``dq``, ``vl``): Intel Xeon Skylake-SP and later (Cascade Lake, Ice
+Lake, Sapphire/Emerald Rapids) and AMD Zen 4 and later (EPYC Genoa/Turin).
+AMD Zen 2/3 (EPYC Rome/Milan), most desktop Intel CPUs and non-x86 machines do
+not have it. A shard checks the CPU before any task runs and stops with an
+error naming the missing flags, rather than letting GEMMA crash on an illegal
+instruction or quietly use another kernel. To check a node::
+
+   grep -o -w -E 'avx512(f|cd|bw|dq|vl)' /proc/cpuinfo | sort -u
+
+**When to change it.**
+
+======================================================  =========================
+Situation                                               Setting
+======================================================  =========================
+Replaying or extending a sealed run; any production     ``SkylakeX`` (default)
+run that will be compared with existing GENBoostGPU or
+R results
+Compute nodes without AVX-512 (e.g. AMD Rome/Milan)     ``auto``, or ``Haswell``
+                                                        (AVX2), consistently for
+                                                        the whole study
+A GEMMA build linked to MKL, a system BLAS or another   ``auto`` (the variable is
+OpenBLAS version                                        ignored or means
+                                                        something else there)
+======================================================  =========================
+
+Rules that follow from this:
+
+* Choose the kernel once per study and keep it for every run whose
+  ``bslmm_pve`` (and therefore score) will be compared. ``Haswell`` is
+  reproducible on any AVX2 CPU, so it is the portable choice for a new study
+  with no sealed runs to match; ``auto`` is reproducible only on one CPU
+  model.
+* Do not change the kernel of a run that has already written task rows: its
+  rows would mix kernels. Initialize a new run instead (editing
+  ``bslmm.blas_coretype`` in ``run.json`` is safe only before any task runs).
+* Names are checked against OpenBLAS's list (``Haswell``, ``SkylakeX``,
+  ``Zen``, ...; case-insensitive). OpenBLAS itself ignores an unknown name and
+  silently falls back to auto-detection, so ``genboostgpu`` rejects it at
+  ``init``.
+* To see the kernel a GEMMA binary actually uses, run it once with
+  ``OPENBLAS_VERBOSE=2``; OpenBLAS prints ``Core: <kernel>``.

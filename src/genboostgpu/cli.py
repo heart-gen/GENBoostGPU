@@ -29,6 +29,30 @@ def _parse_shard(text: str):
     return int(i), int(n)
 
 
+def _bslmm_settings(a) -> dict:
+    """GEMMA settings for run.json; only the OpenBLAS kernel is user-set."""
+    from .lgv.bslmm import BslmmSettings
+
+    kwargs = {}
+    if a.gemma_blas_coretype is not None:
+        kwargs["blas_coretype"] = a.gemma_blas_coretype
+    try:
+        return BslmmSettings(**kwargs).as_dict()
+    except ValueError as err:
+        sys.exit(f"--gemma-blas-coretype: {err}")
+
+
+_CORETYPE_HELP = (
+    "OpenBLAS kernel GEMMA runs with, set through OPENBLAS_CORETYPE "
+    "(default SkylakeX; 'auto' lets OpenBLAS pick from the CPU). The kernel "
+    "changes the rounding of GEMMA's BSLMM, so bslmm_pve moves by up to ~1e-3 "
+    "between kernels; SkylakeX reproduces the sealed dna-methylation-heritability "
+    "runs. SkylakeX needs an x86-64 CPU with AVX-512 (Intel Skylake-SP and later, "
+    "AMD Zen 4 and later); on other CPUs runs stop before any task. Use 'auto' "
+    "(or Haswell) there, accepting that bslmm_pve is then not identical to "
+    "SkylakeX runs. Recorded in run.json as bslmm.blas_coretype.")
+
+
 def _cmd_init(a):
     import pandas as pd
 
@@ -55,7 +79,8 @@ def _cmd_init(a):
         cfg = RunConfig(
             run_id=a.run_id, cohort=src.cohort, region=src.region,
             source=src.describe(), seed_run_id=a.seed_run_id or man["run_id"],
-            bslmm_mode=a.bslmm, joint_model_path=os.path.realpath(a.joint_model),
+            bslmm_mode=a.bslmm, bslmm=_bslmm_settings(a),
+            joint_model_path=os.path.realpath(a.joint_model),
             joint_model_source_sha256=man.get("joint_model_sha256"),
             joint_model_run_id=man.get("joint_model_run_id", ""),
             support_path=os.path.realpath(
@@ -77,7 +102,7 @@ def _cmd_init(a):
             genotype_id_column=a.genotype_id_column)
         cfg = RunConfig(
             run_id=a.run_id, cohort=a.cohort, region=a.region, source=src.describe(),
-            seed_run_id=a.seed_run_id, bslmm_mode=a.bslmm,
+            seed_run_id=a.seed_run_id, bslmm_mode=a.bslmm, bslmm=_bslmm_settings(a),
             joint_model_path=os.path.realpath(a.joint_model) if a.joint_model else None,
             joint_model_source_sha256=a.joint_model_sha256,
             support_path=os.path.realpath(a.support) if a.support else None,
@@ -94,7 +119,7 @@ def _cmd_init(a):
             upstream_vmr_run_id=os.path.basename(os.path.normpath(a.dnam_upstream)))
         cfg = RunConfig(
             run_id=a.run_id, cohort=a.cohort, region=a.region, source=src.describe(),
-            seed_run_id=a.seed_run_id, bslmm_mode=a.bslmm,
+            seed_run_id=a.seed_run_id, bslmm_mode=a.bslmm, bslmm=_bslmm_settings(a),
             joint_model_path=os.path.realpath(a.joint_model) if a.joint_model else None,
             joint_model_source_sha256=a.joint_model_sha256,
             support_path=os.path.realpath(a.support) if a.support else None,
@@ -212,7 +237,8 @@ def _cmd_sites_init(a):
                    joint_model_path=os.path.realpath(a.joint_model) if a.joint_model else None,
                    joint_model_sha256=a.joint_model_sha256,
                    support_path=os.path.realpath(a.support) if a.support else None,
-                   support_cell=a.support_cell, smoke_run=a.smoke)
+                   support_cell=a.support_cell, smoke_run=a.smoke,
+                   bslmm_settings=_bslmm_settings(a))
     print(f"Initialized {a.run_dir}")
 
 
@@ -242,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--seed-run-id", help="run id hashed into seeds (default: run id; "
                    "replays default to the replayed run's id)")
     i.add_argument("--bslmm", choices=["inline", "separate", "off"], default="inline")
+    i.add_argument("--gemma-blas-coretype", metavar="KERNEL", help=_CORETYPE_HELP)
     i.add_argument("--joint-model", help="frozen model JSON from "
                    "scripts/export_frozen_joint_model.R")
     i.add_argument("--joint-model-sha256", help="pin the source .rds sha256")
@@ -352,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("--unit-set-id")
     si.add_argument("--chroms")
     si.add_argument("--bslmm", choices=["inline", "off"], default="off")
+    si.add_argument("--gemma-blas-coretype", metavar="KERNEL", help=_CORETYPE_HELP)
     si.add_argument("--joint-model")
     si.add_argument("--joint-model-sha256")
     si.add_argument("--support")

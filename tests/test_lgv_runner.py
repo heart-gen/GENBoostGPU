@@ -117,3 +117,21 @@ def test_is_environment_error():
             raise ValueError("fit failed") from inner
     except ValueError as outer:
         assert is_environment_error(outer)
+
+
+def test_gemma_blas_coretype_option(toy_inputs):
+    import json
+
+    tmp, _, _, _ = toy_inputs
+    base = ["lgv", "init", "--run-id", "toy-run", "--bslmm", "off",
+            "--regions", str(tmp / "regions.tsv"), "--phenotypes", str(tmp / "pheno.parquet"),
+            "--genotypes", str(tmp / "geno.chr{chrom}"), "--covariates", str(tmp / "covs.tsv"),
+            "--numeric-covariates", "age", "--factor-covariates", "sex",
+            "--cohort", "toy", "--region", "brain", "--min-cis-variants", "50"]
+    for flag, expected in [(None, "SkylakeX"), ("haswell", "Haswell"), ("AUTO", "auto")]:
+        run = tmp / f"run-{expected}"
+        main(base + ["--run-dir", str(run)] + (["--gemma-blas-coretype", flag] if flag else []))
+        assert json.load(open(run / "run.json"))["bslmm"]["blas_coretype"] == expected
+    # OpenBLAS ignores names it does not know, so the CLI must refuse them.
+    with pytest.raises(SystemExit, match="unknown OpenBLAS kernel"):
+        main(base + ["--run-dir", str(tmp / "run-bad"), "--gemma-blas-coretype", "Skylake"])
