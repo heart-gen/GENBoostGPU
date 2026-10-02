@@ -16,6 +16,12 @@ batch (one CUDA launch on the GPU). Batches are solved and their units'
 cross-fits finished on background threads while the main thread prepares
 the next batch.
 
+GEMMA BSLMM runs inline on the shard's spare CPU cores (``bslmm_mode=
+"inline"``), or in a CPU-only job (``"separate"``, ``genboostgpu sites
+bslmm``) that may run on another cluster; combine joins its rows after
+checking that both jobs come from identically initialized runs and saw the
+same inputs.
+
 Rows use the Stage 01 schema (``vmr_id`` holds the unit id) plus
 ``window_block_id``, ``window_start``, ``window_end``; ``genboostgpu lgv
 combine`` reconciles and, when a frozen model and support are configured and
@@ -25,10 +31,10 @@ from __future__ import annotations
 
 import functools
 import glob
+import hashlib
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
 import pandas as pd
@@ -45,10 +51,11 @@ from ..lgv.he import he_from_residuals, he_prepare
 from ..lgv.rstats import r_lm_fit
 from ..lgv.runner import (
     ROW_COLUMNS, RunConfig, _apply_bslmm, _blank_row, _done_task_ids, _write_part,
-    finalize_rows, load_run, shard_tasks, write_run,
+    finalize_rows, load_run, run_key, shard_tasks, write_run,
 )
 
-__all__ = ["SITE_EXTRA_COLUMNS", "site_tasks", "init_sites_run", "run_sites_shard"]
+__all__ = ["SITE_EXTRA_COLUMNS", "site_tasks", "init_sites_run", "run_sites_shard",
+           "run_sites_bslmm_shard"]
 
 _log = functools.partial(print, flush=True)
 
@@ -174,6 +181,9 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
                      BslmmSettings(**cfg.bslmm)) if cfg.bslmm_mode == "inline" else None
     log(f"[sites shard {shard}/{n_shards}] {len(mine)} units in "
         f"{mine['window_block_id'].nunique()} window blocks on {dev}; features={features}")
+    separate = cfg.bslmm_mode == "separate"
+    # The input digest lets combine check that the GEMMA job saw the same data.
+    columns = ROW_COLUMNS + SITE_EXTRA_COLUMNS + (["input_digest"] if separate else [])
     started = time.time()
     out_rows, en_queue, bs_pending = [], [], []
     # Batches in flight, oldest first: (rows, future of the solve). A solve
@@ -248,12 +258,11 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
         ready = [r for r in out_rows if id(r) not in pending_ids]
         if ready and (force or len(ready) >= 256):
             frame = pd.DataFrame(ready)
-            for col in ROW_COLUMNS + SITE_EXTRA_COLUMNS:
+            for col in columns:
                 if col not in frame.columns:
                     frame[col] = None
             frame = _finalize_site_rows(frame, cfg.bslmm_mode, features)
-            _write_part(run_dir, "task_rows", shard,
-                        frame[ROW_COLUMNS + SITE_EXTRA_COLUMNS].to_dict("records"))
+            _write_part(run_dir, "task_rows", shard, frame[columns].to_dict("records"))
             ready_ids = {id(r) for r in ready}
             out_rows = [r for r in out_rows if id(r) not in ready_ids]
 
@@ -268,7 +277,7 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
         out_rows.extend(rows)
         try:
             _process_block(block, rows, src, features, cov, geno_src, store, settings,
-                           pool, en_queue, bs_pending, run_dir)
+                           pool, en_queue, bs_pending, run_dir, digest=separate)
         except Exception as err:
             if is_environment_error(err):
                 raise
@@ -285,23 +294,24 @@ def run_sites_shard(run_dir, shard=0, n_shards=1, device="auto", batch_units=64,
     return dict(units=len(mine), wall_sec=time.time() - started)
 
 
-def _process_block(block, rows, src, features, cov, geno_src, store, settings, pool,
-                   en_queue, bs_pending, run_dir):
+def _load_block(block, src, cov, geno_src, store):
+    """Window, donors, variant QC and phenotypes shared by a block's units.
+
+    Returns ``(info, data)``: ``info`` holds the fields every unit row of the
+    block gets; ``data`` is ``None`` when the block stops here (``info`` then
+    carries its terminal status), else ``(G, design, Y, sample_ids)``.
+    """
     chrom = str(block["chrom"].iloc[0]).removeprefix("chr")
     if chrom.upper() in ("X", "Y"):
-        for r in rows:
-            r.update(terminal_status="excluded", exclusion_reason="non_autosomal_vmr")
-        return
+        return dict(terminal_status="excluded", exclusion_reason="non_autosomal_vmr"), None
     w_start = max(1, int(block["start"].min()) - int(src["window_bp"]))
     w_end = int(block["end"].max()) + int(src["window_bp"])
-    for r in rows:
-        r.update(window_start=w_start, window_end=w_end)
+    info = dict(window_start=w_start, window_end=w_end)
     geno, _ = geno_src.window(chrom, w_start, w_end)
     if geno.shape[1] == 0:
-        for r in rows:
-            r.update(terminal_status="qc_failed",
-                     exclusion_reason="no_snp_in_prespecified_cis_window")
-        return
+        info.update(terminal_status="qc_failed",
+                    exclusion_reason="no_snp_in_prespecified_cis_window")
+        return info, None
     beta, samples = store.load(chrom)
     gid = geno_src.samples(chrom)[src.get("genotype_id_column", "IID")].astype(str).to_numpy()
     # Donor base set: phenotype store order, genotyped, complete covariates.
@@ -310,15 +320,61 @@ def _process_block(block, rows, src, features, cov, geno_src, store, settings, p
     store_pos = pd.Series(np.arange(len(samples)), index=samples)
     srow = store_pos.loc[meta["sample_id"].to_numpy()].to_numpy()
     G = geno[meta["_geno_row"].to_numpy()]
-    snps_in_window = int(G.shape[1])
+    info["snps_in_window"] = int(G.shape[1])
     keep = snp_qc_mask(G, src["maf_min"], src["missing_max"])
     if int(keep.sum()) < int(src["min_cis_variants"]):
-        for r in rows:
-            r.update(terminal_status="qc_failed", exclusion_reason="fewer_than_min_cis_variants",
-                     snps_in_window=snps_in_window)
-        return
-    G = G[:, keep]
+        info.update(terminal_status="qc_failed", exclusion_reason="fewer_than_min_cis_variants")
+        return info, None
     Y = beta[np.ix_(srow, block["unit_index"].to_numpy())]
+    return info, (G[:, keep], design, Y, meta["sample_id"].astype(str).to_numpy())
+
+
+def _unit_inputs(G, design, Y, complete, j):
+    """Genotypes, covariates and phenotype of unit ``j`` (its own donor subset
+    when it has missing values)."""
+    y = Y[:, j]
+    if complete[j]:
+        return G, design, y, None
+    ok = np.isfinite(y)
+    return G[ok], design[ok], y[ok], ok
+
+
+def _block_digest(G, design, sample_ids) -> bytes:
+    h = hashlib.sha256()          # fastest of hashlib's digests here (SHA extensions)
+    for a in (np.ascontiguousarray(G, np.float64), np.ascontiguousarray(design, np.float64)):
+        h.update(str(a.shape).encode())
+        h.update(a.tobytes())
+    h.update("\t".join(sample_ids).encode())
+    return h.digest()
+
+
+def _unit_digest(block_digest: bytes, ok, y) -> str:
+    """Digest of one unit's GEMMA inputs (genotypes, covariates, donors and
+    phenotype), so rows computed on two clusters are joined only when both
+    saw the same data."""
+    h = hashlib.sha256(block_digest)
+    h.update(b"all" if ok is None else np.packbits(ok).tobytes())
+    h.update(np.ascontiguousarray(y, np.float64).tobytes())
+    return h.hexdigest()[:32]
+
+
+def _bslmm_inputs(g_j, d_j, y_j):
+    return mean_impute_for_bslmm(g_j), residualize_phenotype(y_j, d_j if d_j.size else None)
+
+
+def _work_dir(run_dir, task_id):
+    return os.path.join(run_dir, "work", f"unit-{int(task_id):09d}")
+
+
+def _process_block(block, rows, src, features, cov, geno_src, store, settings, pool,
+                   en_queue, bs_pending, run_dir, digest=False):
+    info, data = _load_block(block, src, cov, geno_src, store)
+    for r in rows:
+        r.update(info)
+    if data is None:
+        return
+    G, design, Y, sample_ids = data
+    snps_in_window = info["snps_in_window"]
     complete = np.all(np.isfinite(Y), axis=0)
     base_geom = None
     if "geometry" in features and complete.any():
@@ -328,17 +384,17 @@ def _process_block(block, rows, src, features, cov, geno_src, store, settings, p
     if prep_base is not None:
         R = _residualize_scale(Y[:, complete], design)
         he_vals = he_from_residuals(prep_base, R)
+    bd = _block_digest(G, design, sample_ids) if digest else None
     ci = 0
     for j, r in enumerate(rows):
-        y = Y[:, j]
-        ok = np.isfinite(y)
-        g_j, d_j = (G, design) if complete[j] else (G[ok], design[ok])
-        y_j = y if complete[j] else y[ok]
+        g_j, d_j, y_j, ok = _unit_inputs(G, design, Y, complete, j)
         r.update(snps_in_window=snps_in_window, num_snps=int(G.shape[1]),
                  n_variants=int(G.shape[1]), n=int(y_j.size), samples=int(y_j.size),
                  mean_methylation=float(np.mean(y_j)),
                  methylation_variance=float(np.var(y_j, ddof=1)),
                  plink_source=src["genotype_pattern"], phenotype_source=src["units_dir"])
+        if digest:
+            r["input_digest"] = _unit_digest(bd, ok, y_j)
         if "geometry" in features:
             if complete[j]:
                 r.update(p_eff=base_geom[0], ld_metric=base_geom[1])
@@ -364,13 +420,95 @@ def _process_block(block, rows, src, features, cov, geno_src, store, settings, p
                                     seed=r["feature_seed"] + 17)
             en_queue.append((r, prep))
         if pool is not None:
-            wd = os.path.join(run_dir, "work", f"unit-{int(r['task_id']):09d}")
-            bs_pending.append((r, pool.submit(mean_impute_for_bslmm(g_j),
-                                              residualize_phenotype(y_j, d_j if d_j.size else None),
-                                              wd, r["feature_seed"])))
+            bs_pending.append((r, pool.submit(*_bslmm_inputs(g_j, d_j, y_j),
+                                              _work_dir(run_dir, r["task_id"]),
+                                              r["feature_seed"])))
+
+
+def run_sites_bslmm_shard(run_dir, shard=0, n_shards=1, gemma_workers=None,
+                          log=_log) -> dict:
+    """``bslmm_mode="separate"``: GEMMA only, for a CPU-only job.
+
+    Units are loaded, QC'd and residualized by the same code as ``sites run``
+    with inline GEMMA, with the same seeds, so the BSLMM columns equal an
+    inline run's. Each row carries the run key and a digest of the unit's
+    inputs; ``lgv combine`` checks both against the feature rows before it
+    joins them, which lets this job run on a different cluster than the GPU
+    shards (see ``docs/user-guide/sites_and_cost.rst``).
+    """
+    cfg, tasks = load_run(run_dir)
+    if cfg.bslmm_mode != "separate":
+        raise ValueError(f"run {cfg.run_id} has bslmm_mode={cfg.bslmm_mode!r}; "
+                         "sites bslmm needs a run initialized with --bslmm separate")
+    src = cfg.source
+    key = run_key(cfg, tasks)
+    cov = CovariateSpec.from_describe(src["covariates"])
+    geno_src = GenotypeSource(src["genotype_pattern"])
+    store = _UnitStore(src["units_dir"])
+    mine = shard_tasks(tasks, shard, n_shards)
+    done = _done_task_ids(run_dir, "bslmm_rows", shard)
+    mine = mine[~mine["task_id"].isin(done)]
+    workers = gemma_workers or max(1, (os.cpu_count() or 2) - 1)
+    pool = BslmmPool(workers, BslmmSettings(**cfg.bslmm))
+    log(f"[sites bslmm shard {shard}/{n_shards}] {len(mine)} units in "
+        f"{mine['window_block_id'].nunique()} window blocks; {workers} GEMMA workers")
+    started = time.time()
+    inflight, rows, chains = {}, [], 0
+
+    def harvest(limit):
+        # Waiting once the queue is full bounds the genotype copies held in memory.
+        nonlocal rows
+        while inflight:
+            ready = [f for f in inflight if f.done()]
+            if not ready:
+                if len(inflight) <= limit:
+                    break
+                ready = list(wait(inflight, return_when=FIRST_COMPLETED).done)
+            for fut in ready:
+                r = inflight.pop(fut)
+                _apply_bslmm(r, fut.result())
+                r["bslmm_error"] = r.pop("_bslmm_error", None)
+                rows.append(r)
+        if len(rows) >= 256 or (limit == 0 and rows):
+            _write_part(run_dir, "bslmm_rows", shard, rows)
+            rows = []
+
+    for _, block in mine.groupby("window_block_id", sort=False):
+        submitted = set()
+        try:
+            info, data = _load_block(block, src, cov, geno_src, store)
+            if data is None:
+                continue
+            G, design, Y, sample_ids = data
+            complete = np.all(np.isfinite(Y), axis=0)
+            bd = _block_digest(G, design, sample_ids)
+            for j, (_, t) in enumerate(block.iterrows()):
+                g_j, d_j, y_j, ok = _unit_inputs(G, design, Y, complete, j)
+                tid = int(t["task_id"])
+                seed = stable_seed(cfg.effective_seed_run_id, cfg.region, t["vmr_id"],
+                                   "joint_features")
+                fut = pool.submit(*_bslmm_inputs(g_j, d_j, y_j), _work_dir(run_dir, tid), seed)
+                inflight[fut] = dict(task_id=tid, run_key=key,
+                                     input_digest=_unit_digest(bd, ok, y_j))
+                submitted.add(tid)
+                chains += 1
+                harvest(4 * workers)
+        except Exception as err:
+            if is_environment_error(err):
+                raise
+            rows.extend(dict(task_id=int(tid), run_key=key, bslmm_converged=False,
+                             bslmm_error=f"{type(err).__name__}: {err}")
+                        for tid in block["task_id"] if int(tid) not in submitted)
+    harvest(0)
+    pool.shutdown()
+    log(f"[sites bslmm shard {shard}] {chains} chains in {time.time() - started:.1f}s")
+    return dict(units=len(mine), chains=chains, wall_sec=time.time() - started)
 
 
 def _finalize_site_rows(frame, bslmm_mode, features):
+    if bslmm_mode == "separate" and set(features) >= {"geometry", "he", "en"}:
+        # BSLMM arrives from the GEMMA job; terminal status is set at combine.
+        return frame.drop(columns=[c for c in frame.columns if c.startswith("_")])
     if bslmm_mode != "off" and set(features) >= {"geometry", "he", "en"}:
         return finalize_rows(frame, bslmm_mode)
     pending = frame["terminal_status"].astype(str) == "pending"

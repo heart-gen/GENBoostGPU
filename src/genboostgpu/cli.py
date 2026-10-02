@@ -5,6 +5,7 @@
     genboostgpu lgv bslmm    GEMMA-only shard for bslmm_mode=separate (CPU job)
     genboostgpu lgv combine  reconcile shards, apply the frozen model, score, QC
     genboostgpu lsp init|run|combine   Module 03 out-of-fold prediction
+    genboostgpu sites init|run|bslmm   site-level features (combine with lgv combine)
 
 See ``docs/user-guide/lgv_engine.rst``.
 """
@@ -250,6 +251,13 @@ def _cmd_sites_run(a):
                     cpu_threads=a.cpu_threads, gemma_workers=a.gemma_workers)
 
 
+def _cmd_sites_bslmm(a):
+    from .sites.runner import run_sites_bslmm_shard
+
+    shard, n = _parse_shard(a.shard)
+    run_sites_bslmm_shard(a.run_dir, shard, n, gemma_workers=a.gemma_workers)
+
+
 def _cmd_regions_merge(a):
     from .io.regions_build import merge_build
 
@@ -378,7 +386,10 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("--genotype-id-column", default="IID")
     si.add_argument("--unit-set-id")
     si.add_argument("--chroms")
-    si.add_argument("--bslmm", choices=["inline", "off"], default="off")
+    si.add_argument("--bslmm", choices=["inline", "separate", "off"], default="off",
+                    help="GEMMA BSLMM: on the shard's spare cores (inline), in a "
+                    "CPU-only 'sites bslmm' job that may run on another cluster "
+                    "(separate), or not at all (off; features only, no score)")
     si.add_argument("--gemma-blas-coretype", metavar="KERNEL", help=_CORETYPE_HELP)
     si.add_argument("--joint-model")
     si.add_argument("--joint-model-sha256")
@@ -394,6 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--cpu-threads", type=int, default=1)
     sr.add_argument("--gemma-workers", type=int)
     sr.set_defaults(func=_cmd_sites_run)
+    sb = ssub2.add_parser("bslmm", help="GEMMA-only shard (bslmm_mode=separate; CPU job)")
+    sb.add_argument("--run-dir", required=True)
+    sb.add_argument("--shard", default="")
+    sb.add_argument("--gemma-workers", type=int)
+    sb.set_defaults(func=_cmd_sites_bslmm)
 
     reg = sub.add_parser("regions", help="region builder utilities")
     rsub = reg.add_subparsers(dest="regions_command", required=True)

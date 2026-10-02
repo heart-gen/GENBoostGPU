@@ -5,6 +5,14 @@ Full release notes live on `GitHub <https://github.com/heart-gen/GENBoostGPU/rel
 The highlights below summarise major updates.
 
 Unreleased
+   * **Separate GEMMA for site runs**: ``sites init --bslmm separate`` and
+     ``genboostgpu sites bslmm --shard i/N`` run BSLMM in a CPU-only job,
+     possibly on another cluster, and ``lgv combine`` joins the rows. Combine
+     checks that the GEMMA rows come from an identically initialized run
+     (a run key that ignores file paths) and that both halves saw the same
+     inputs for every unit (an input digest), and reports pending units
+     without a GEMMA row (``bslmm_rows_missing``). Rows equal inline GEMMA's.
+     ``lgv bslmm`` rows carry the run key too.
    * **GEMMA OpenBLAS kernel pinned** (``bslmm.blas_coretype``, default
      ``SkylakeX``): GEMMA's OpenBLAS picks its kernel from the CPU and fell
      back to a generic one on quest13 nodes, moving ``bslmm_pve`` by up to
