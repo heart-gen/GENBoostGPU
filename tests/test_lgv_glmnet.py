@@ -60,6 +60,43 @@ def test_threaded_cpu_matches_serial(fx):
         np.testing.assert_array_equal(s.beta, t.beta)
 
 
+def _ref_coef_at(fit, s):
+    # the straightforward interpolation of every row (predict.glmnet)
+    from genboostgpu.lgv.glmnet import lambda_interp
+
+    left, right, frac = lambda_interp(fit.lambda_, np.atleast_1d(s))
+    return fit.beta[:, left] * frac + fit.beta[:, right] * (1.0 - frac)
+
+
+def _ref_wmean(x, w):
+    ok = ~np.isnan(x)
+    return np.sum(x[ok] * w[ok]) / np.sum(w[ok]) if ok.any() else np.nan
+
+
+@pytest.mark.parametrize("tag", ["cov", "naive"])
+def test_fast_cv_summary_is_bitwise_reference(fx, tag):
+    """Active-row interpolation and column-wise weighted means give exactly
+    the values (and the BLAS product exactly the predictions) of the plain
+    per-row / per-column computation."""
+    from genboostgpu.lgv.glmnet import _wmean_cols
+
+    x, y, foldid = _load(fx, tag)
+    cv = cv_glmnet_gaussian(x, y, foldid, alpha=0.5)
+    lam = cv.glmnet_fit.lambda_
+    for fit in [cv.glmnet_fit] + cv.fold_fits:
+        _, beta = fit.coef_at(lam)
+        ref = _ref_coef_at(fit, lam)
+        np.testing.assert_array_equal(beta, ref)
+        np.testing.assert_array_equal(x[:9] @ beta, x[:9] @ ref)
+    rng = np.random.default_rng(1)
+    m = rng.uniform(0.5, 2.0, size=(5, 40))
+    m[rng.uniform(size=m.shape) < 0.2] = np.nan
+    m[:, 3] = np.nan
+    w = np.array([13.0, 12.0, 12.0, 13.0, 12.0])
+    ref = np.array([_ref_wmean(m[:, j], w) for j in range(m.shape[1])])
+    np.testing.assert_array_equal(_wmean_cols(m, w), ref)
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("tag", ["cov", "naive"])
 def test_gpu_matches_cpu(fx, tag):

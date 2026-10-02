@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import numpy as np
 
@@ -127,13 +128,26 @@ class GlmnetFit:
     def coef(self, index):
         return self.a0[index], self.beta[:, index]
 
+    @cached_property
+    def _active_rows(self):
+        # SNPs nonzero anywhere on the path; every other row of beta is zero
+        return np.flatnonzero(self.beta.any(axis=1))
+
     def coef_at(self, s):
         """``coef(fit, s = s)``: intercepts (len(s),) and betas (p, len(s)),
         linearly interpolated exactly as ``predict.glmnet``/``lambda.interp``."""
         s = np.atleast_1d(np.asarray(s, dtype=np.float64))
         left, right, frac = lambda_interp(self.lambda_, s)
         a0 = self.a0[left] * frac + self.a0[right] * (1.0 - frac)
-        beta = self.beta[:, left] * frac + self.beta[:, right] * (1.0 - frac)
+        # Interpolate only the active rows: a zero row stays exactly zero, so
+        # the result is identical to interpolating all p rows. Column-major,
+        # like the fancy-indexed full interpolation: the BLAS product in
+        # predict_at rounds differently for the two layouts.
+        beta = np.zeros((self.beta.shape[0], s.size), order="F")
+        rows = self._active_rows
+        if rows.size:
+            b = self.beta[rows]
+            beta[rows] = b[:, left] * frac + b[:, right] * (1.0 - frac)
         return a0, beta
 
     def predict_at(self, newx, s):
@@ -404,12 +418,12 @@ def cv_summarize(x, y, foldid, full_fit: GlmnetFit, fold_fits) -> CvGlmnetFit:
         with np.errstate(invalid="ignore"):
             outmat[i - 1] = np.nanmean(mati, axis=0)
     good_n = float(nfolds)
-    cvm = np.array([_wmean(outmat[:, j], wisum) for j in range(nlambda)])
-    cvsd = np.array([
-        math.sqrt(_wmean((outmat[:, j] - cvm[j]) ** 2, wisum) / (good_n - 1))
-        if np.isfinite(cvm[j]) else np.nan
-        for j in range(nlambda)
-    ])
+    cvm = _wmean_cols(outmat, wisum)
+    finite = np.isfinite(cvm)
+    with np.errstate(invalid="ignore"):
+        cvsd = np.sqrt(_wmean_cols((outmat - np.where(finite, cvm, 0.0)) ** 2, wisum)
+                       / (good_n - 1))
+    cvsd[~finite] = np.nan
     keep = ~np.isnan(cvsd)
     lam_k, cvm_k, cvsd_k = lam[keep], cvm[keep], cvsd[keep]
     if lam_k.size == 0:
@@ -429,11 +443,21 @@ def cv_summarize(x, y, foldid, full_fit: GlmnetFit, fold_fits) -> CvGlmnetFit:
                        glmnet_fit=full_fit, fold_fits=list(fold_fits))
 
 
-def _wmean(x, w):
-    ok = ~np.isnan(x)
-    if not np.any(ok):
-        return np.nan
-    return float(np.sum(x[ok] * w[ok]) / np.sum(w[ok]))
+def _wmean_cols(m, w):
+    """``weighted.mean(m[, j], w, na.rm = TRUE)`` for every column of ``m``
+    (folds x lambdas); NaN where a column has no finite entry.
+
+    NA entries contribute an exact 0.0 to both sums, and the column sums run
+    down the folds in order, so each value is bitwise what summing only the
+    non-NA entries of that column gives.
+    """
+    ok = ~np.isnan(m)
+    with np.errstate(invalid="ignore"):
+        num = np.where(ok, m * w[:, None], 0.0).sum(axis=0)
+        den = np.where(ok, w[:, None], 0.0).sum(axis=0)
+        out = num / den
+    out[~ok.any(axis=0)] = np.nan
+    return out
 
 
 def cv_glmnet_gaussian(x, y, foldid, alpha=1.0, device="cpu", **kwargs) -> CvGlmnetFit:
