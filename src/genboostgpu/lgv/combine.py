@@ -5,7 +5,9 @@ Equivalent to Module 02 Stages 02-05 for a GENBoostGPU run directory:
 * reconcile every expected task (missing tasks become explicit
   computational-failure rows; duplicate or unexpected task IDs stop the run),
   clearing stale diagnostics when their condition no longer holds;
-* in ``bslmm_mode="separate"``, join the CPU job's BSLMM rows first;
+* in ``bslmm_mode="separate"``, join the CPU job's BSLMM rows first, after
+  checking they come from an identically initialized run with the same
+  inputs (the job may run on another cluster);
 * apply the frozen joint model and the per-cell domain gate, derive the
   within-cell score, and evaluate the six Stage 05 criteria.
 
@@ -26,10 +28,10 @@ import numpy as np
 import pandas as pd
 
 from .joint_model import load_joint_model
-from .runner import BSLMM_COLUMNS, ROW_COLUMNS, finalize_rows, load_run
+from .runner import BSLMM_COLUMNS, ROW_COLUMNS, finalize_rows, load_run, run_key
 from .score import apply_domain_gate, check_score, derive_score, read_support
 
-__all__ = ["combine_run", "read_parts", "reconcile"]
+__all__ = ["combine_run", "join_bslmm_rows", "read_parts", "reconcile"]
 
 _log = functools.partial(print, flush=True)
 
@@ -113,6 +115,54 @@ def reconcile(rows: pd.DataFrame | None, tasks: pd.DataFrame, combined_dir: str,
     return rows, recon
 
 
+def join_bslmm_rows(rows: pd.DataFrame, bs: pd.DataFrame | None,
+                    key: str) -> tuple[pd.DataFrame, int]:
+    """Join the GEMMA job's rows (``bslmm_mode="separate"``) to feature rows.
+
+    The GEMMA job may have run from another run directory, even on another
+    cluster, so its rows are checked first: every row must carry this run's
+    key (same initialization apart from file paths), and where both sides
+    recorded a digest of the unit's inputs the digests must agree. Pending
+    tasks without a BSLMM row are returned with a ``bslmm_error`` saying so,
+    and their count is returned too.
+    """
+    rows = rows.drop(columns=[c for c in BSLMM_COLUMNS + ["bslmm_error"]
+                              if c in rows.columns])
+    if bs is None:
+        bs = pd.DataFrame({"task_id": pd.Series(dtype=np.int64)})
+    if bs["task_id"].duplicated().any():
+        raise RuntimeError("Duplicate task IDs among BSLMM rows")
+    if "run_key" in bs.columns:
+        keys = sorted(set(bs["run_key"].astype(str)) - {key})
+        if keys:
+            raise RuntimeError(
+                f"BSLMM rows with run key(s) {', '.join(keys)} come from a run initialized "
+                f"differently from this one (key {key}). Initialize both run directories "
+                "with the same arguments, changing only input paths.")
+        bs = bs.drop(columns="run_key")
+    bs = bs.rename(columns={"input_digest": "_bslmm_input_digest"})
+    rows = rows.merge(bs, on="task_id", how="left", indicator="_bslmm_joined")
+    if "input_digest" in rows.columns and "_bslmm_input_digest" in rows.columns:
+        a, b = rows["input_digest"], rows["_bslmm_input_digest"]
+        bad = a.notna() & b.notna() & (a != b)
+        if bad.any():
+            ids = rows.loc[bad, "task_id"].astype(int).tolist()
+            raise RuntimeError(
+                f"{len(ids)} tasks had different inputs in the GEMMA job and the feature "
+                f"shards (first task IDs: {ids[:10]}); the units, genotypes or covariates "
+                "differ between the two copies.")
+    rows = rows.drop(columns=[c for c in ("input_digest",) if c in rows.columns])
+    for c in BSLMM_COLUMNS + ["bslmm_error"]:
+        if c not in rows.columns:
+            rows[c] = None
+    missing = ((rows["_bslmm_joined"] == "left_only")
+               & (rows["terminal_status"].astype(str) == "pending"))
+    rows["bslmm_error"] = rows["bslmm_error"].astype(object)
+    rows.loc[missing, "bslmm_error"] = "no BSLMM row (separate GEMMA job output missing)"
+    rows["bslmm_converged"] = [v is True or v is np.True_ for v in rows["bslmm_converged"]]
+    return rows, int(missing.sum())
+
+
 def _sha(path):
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
 
@@ -123,17 +173,12 @@ def combine_run(run_dir: str, write_r_task_rows: bool = False, score: bool = Tru
     combined = os.path.join(run_dir, "results", "combined")
     os.makedirs(combined, exist_ok=True)
     rows = read_parts(run_dir, "task_rows")
+    result = {}
     if cfg.bslmm_mode == "separate" and rows is not None:
-        bs = read_parts(run_dir, "bslmm_rows")
-        rows = rows.drop(columns=[c for c in BSLMM_COLUMNS if c in rows.columns])
-        if bs is not None:
-            if bs["task_id"].duplicated().any():
-                raise RuntimeError("Duplicate task IDs among BSLMM rows")
-            rows = rows.merge(bs, on="task_id", how="left")
-        for c in BSLMM_COLUMNS:
-            if c not in rows.columns:
-                rows[c] = None
-        rows["bslmm_converged"] = rows["bslmm_converged"].fillna(False).astype(bool)
+        rows, result["bslmm_rows_missing"] = join_bslmm_rows(
+            rows, read_parts(run_dir, "bslmm_rows"), run_key(cfg, tasks))
+        if result["bslmm_rows_missing"]:
+            log(f"[combine] {result['bslmm_rows_missing']} pending tasks have no BSLMM row")
         rows = finalize_rows(rows, "inline")
     rows, recon = reconcile(rows, tasks, combined, cfg)
     rows = rows[ROW_COLUMNS + [c for c in rows.columns if c not in ROW_COLUMNS]]
@@ -144,7 +189,7 @@ def combine_run(run_dir: str, write_r_task_rows: bool = False, score: bool = Tru
         for _, r in rows.iterrows():
             _write_tsv(pd.DataFrame([r]), os.path.join(tr, f"vmr-{int(r['task_id']):07d}.tsv"))
     log(f"[combine] reconciliation: {recon}")
-    result = dict(reconciliation=recon)
+    result["reconciliation"] = recon
     if score and cfg.bslmm_mode != "off":
         if not (cfg.joint_model_path and cfg.support_path):
             raise RuntimeError("run.json lacks joint_model_path/support_path; "

@@ -131,3 +131,141 @@ def test_read_pvar_types(tmp_path):
     assert v["pos"].dtype == np.int64 and v["pos"].tolist() == [833068, 1057648]
     assert v["snp"].tolist() == ["00123", "rs1"]       # IDs stay strings
     assert v["chrom"].tolist() == ["chr1", "1"]
+
+
+def _init_sites(run, base, *extra):
+    main(["sites", "init", "--run-dir", str(run), "--run-id", "toy-sites-bslmm",
+          "--units-dir", str(base / "units"), "--genotypes", str(base / "g.chr{chrom}"),
+          "--covariates", str(base / "covs.tsv"), "--numeric-covariates", "age",
+          "--cohort", "toy", "--region", "x", "--window-block-bp", "50000",
+          "--min-cis-variants", "30", "--gemma-blas-coretype", "auto", *extra])
+
+
+def _short_chains(run, gemma_bin=None):
+    import json
+
+    cfg = json.load(open(run / "run.json"))
+    cfg["bslmm"].update(burn_in=200, sampling=2000)
+    if gemma_bin is not None:
+        cfg["bslmm"]["gemma_bin"] = gemma_bin
+    json.dump(cfg, open(run / "run.json", "w"), indent=2)
+
+
+def _other_cluster(tmp):
+    """A second copy of the inputs at different paths ("the other cluster")."""
+    import shutil
+
+    other = tmp / "other_cluster"
+    shutil.copytree(tmp / "units", other / "units")
+    for f in tmp.glob("g.chr7.*"):
+        shutil.copy(f, other / f.name)
+    shutil.copy(tmp / "covs.tsv", other / "covs.tsv")
+    return other
+
+
+def _copy_bslmm_rows(src_run, dst_run):
+    import shutil
+
+    for f in (src_run / "bslmm_rows").glob("part-*.parquet"):
+        shutil.copy(f, dst_run / "bslmm_rows" / f.name)
+
+
+def _combined(run):
+    return pd.read_csv(run / "results" / "combined" / "observed-joint-features.tsv",
+                       sep="\t").set_index("task_id").sort_index()
+
+
+def test_sites_separate_bslmm_matches_inline(toy_sites):
+    """GEMMA in a CPU job run from another copy of the inputs, joined at
+    combine, gives the rows of inline GEMMA."""
+    import os
+
+    from genboostgpu.lgv.bslmm import BslmmSettings
+
+    if not os.access(BslmmSettings().gemma_bin, os.X_OK):
+        pytest.skip("GEMMA binary not available")
+    tmp, _, _ = toy_sites
+    inline = tmp / "run_inline"
+    _init_sites(inline, tmp, "--bslmm", "inline")
+    _short_chains(inline)
+    main(["sites", "run", "--run-dir", str(inline), "--device", "cpu",
+          "--gemma-workers", "4"])
+    main(["lgv", "combine", "--run-dir", str(inline), "--no-score"])
+
+    gpu = tmp / "run_gpu"
+    _init_sites(gpu, tmp, "--bslmm", "separate")
+    _short_chains(gpu)
+    main(["sites", "run", "--run-dir", str(gpu), "--device", "cpu"])
+    other = _other_cluster(tmp)
+    cpu = other / "run_cpu"
+    _init_sites(cpu, other, "--bslmm", "separate")
+    _short_chains(cpu)
+    main(["sites", "bslmm", "--run-dir", str(cpu), "--shard", "0/2", "--gemma-workers", "2"])
+    main(["sites", "bslmm", "--run-dir", str(cpu), "--shard", "1/2", "--gemma-workers", "2"])
+    _copy_bslmm_rows(cpu, gpu)
+    main(["lgv", "combine", "--run-dir", str(gpu), "--no-score"])
+
+    a, b = _combined(inline), _combined(gpu)
+    assert (a["terminal_status"] == "completed").sum() >= 10
+    assert a["bslmm_pve"].notna().sum() >= 10
+    assert list(a.columns) == list(b.columns)
+    cols = [c for c in a.columns if c not in ("bslmm_elapsed_sec", "plink_source",
+                                               "phenotype_source")]
+    pd.testing.assert_frame_equal(a[cols], b[cols], check_exact=True)
+
+
+def test_sites_separate_bslmm_join_checks(toy_sites):
+    """Combine refuses GEMMA rows from a differently initialized run or from
+    different inputs, and flags pending tasks that have no GEMMA row."""
+    tmp, _, _ = toy_sites
+    gpu = tmp / "run_gpu"
+    _init_sites(gpu, tmp, "--bslmm", "separate", "--features", "geometry,he")
+    _short_chains(gpu)        # the binary's path is not part of the run key
+    main(["sites", "run", "--run-dir", str(gpu), "--device", "cpu"])
+
+    # No GEMMA rows: features-only tiers keep their status; nothing is joined.
+    main(["lgv", "combine", "--run-dir", str(gpu), "--no-score"])
+    assert (_combined(gpu)["terminal_status"] == "features_only").all()
+
+    other = _other_cluster(tmp)
+    # GEMMA chains fail fast without a binary; the rows still carry the checks.
+    differs = other / "run_maf"
+    _init_sites(differs, other, "--bslmm", "separate", "--features", "geometry,he",
+                "--maf-min", "0.1")
+    _short_chains(differs, gemma_bin=str(tmp / "no-gemma"))
+    main(["sites", "bslmm", "--run-dir", str(differs), "--gemma-workers", "1"])
+    _copy_bslmm_rows(differs, gpu)
+    with pytest.raises(RuntimeError, match="initialized differently"):
+        main(["lgv", "combine", "--run-dir", str(gpu), "--no-score"])
+    for f in (gpu / "bslmm_rows").glob("part-*.parquet"):
+        f.unlink()
+
+    with h5py.File(other / "units" / "chr7.beta.h5", "r+") as f:
+        f["beta"][7, 2] += 0.01                # one donor's value of unit 3
+    same = other / "run_same"
+    _init_sites(same, other, "--bslmm", "separate", "--features", "geometry,he")
+    _short_chains(same, gemma_bin=str(tmp / "no-gemma"))
+    main(["sites", "bslmm", "--run-dir", str(same), "--gemma-workers", "1"])
+    _copy_bslmm_rows(same, gpu)
+    with pytest.raises(RuntimeError, match=r"different inputs .*\[3\]"):
+        main(["lgv", "combine", "--run-dir", str(gpu), "--no-score"])
+
+
+def test_sites_separate_missing_bslmm_rows(toy_sites):
+    tmp, _, _ = toy_sites
+    run = tmp / "run_sep"
+    _init_sites(run, tmp, "--bslmm", "separate", "--features", "geometry,he,en")
+    main(["sites", "run", "--run-dir", str(run), "--device", "cpu"])
+    parts = pd.concat(pd.read_parquet(p) for p in (run / "task_rows").glob("*.parquet"))
+    assert (parts["terminal_status"] == "pending").sum() >= 10
+    assert parts.loc[parts["terminal_status"] == "pending", "input_digest"].notna().all()
+    main(["lgv", "combine", "--run-dir", str(run), "--no-score"])
+    rows = _combined(run)
+    assert "input_digest" not in rows.columns
+    failed = rows["terminal_status"] == "computational_failure"
+    assert failed.sum() >= 10
+    assert rows.loc[failed, "feature_error"].str.contains("no BSLMM row").all()
+    import json
+
+    man = json.load(open(run / "results" / "run-manifest.json"))
+    assert man["bslmm_rows_missing"] == failed.sum()

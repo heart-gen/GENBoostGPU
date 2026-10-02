@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import functools
 import glob
+import hashlib
 import json
 import os
 import socket
@@ -40,7 +41,7 @@ from .he import haseman_elston
 from .tasks import source_from_config
 
 __all__ = ["ROW_COLUMNS", "BSLMM_COLUMNS", "RunConfig", "write_run", "load_run",
-           "run_shard", "run_bslmm_shard", "finalize_rows", "shard_tasks"]
+           "run_shard", "run_bslmm_shard", "finalize_rows", "shard_tasks", "run_key"]
 
 _log = functools.partial(print, flush=True)
 
@@ -139,6 +140,38 @@ def load_run(run_dir: str):
     tasks = pd.read_csv(os.path.join(run_dir, "tasks.tsv"), sep="\t",
                         dtype={"chrom": str, "vmr_id": str, "vmr_set_id": str})
     return cfg, tasks
+
+
+# Source fields that name files; they differ between clusters and do not
+# change the numbers, so the run key leaves them out.
+_PATH_KEYS = frozenset({"units_dir", "genotype_pattern", "phenotype_path", "vmr_run_dir",
+                        "path"})
+
+
+def _without_paths(value):
+    if isinstance(value, dict):
+        return {k: _without_paths(v) for k, v in value.items() if k not in _PATH_KEYS}
+    return value
+
+
+def run_key(cfg: RunConfig, tasks: pd.DataFrame) -> str:
+    """Digest of everything that determines a run's numbers except file paths.
+
+    Two run directories initialized with the same arguments on different
+    clusters (only the input paths differ) share a key, so BSLMM rows from a
+    CPU-only job on one cluster can be joined with feature rows from the
+    other. The task table, seeds, GEMMA settings (not the binary's path),
+    cross-fit settings and source options all enter the key.
+    """
+    bslmm = {k: v for k, v in cfg.bslmm.items() if k != "gemma_bin"}
+    t = tasks.sort_values("task_id")
+    spec = dict(run_id=cfg.run_id, seed_run_id=cfg.effective_seed_run_id,
+                cohort=cfg.cohort, region=cfg.region, bslmm_mode=cfg.bslmm_mode,
+                bslmm=bslmm, crossfit=cfg.crossfit, source=_without_paths(cfg.source),
+                tasks=[t[c].astype(str).tolist()
+                       for c in ("task_id", "vmr_id", "chrom", "start", "end")])
+    text = json.dumps(spec, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def shard_tasks(tasks: pd.DataFrame, shard: int, n_shards: int) -> pd.DataFrame:
@@ -421,6 +454,7 @@ def run_bslmm_shard(run_dir: str, shard: int = 0, n_shards: int = 1,
     """``bslmm_mode="separate"``: run only GEMMA for a shard (CPU-only job)."""
     cfg, tasks = load_run(run_dir)
     source = source_from_config(cfg.source, tasks)
+    key = run_key(cfg, tasks)
     mine = shard_tasks(tasks, shard, n_shards)
     done = _done_task_ids(run_dir, "bslmm_rows", shard)
     gemma_workers = gemma_workers or max(1, (os.cpu_count() or 2) - 1)
@@ -438,7 +472,7 @@ def run_bslmm_shard(run_dir: str, shard: int = 0, n_shards: int = 1,
         except Exception as err:
             if is_environment_error(err):
                 raise
-            rows.append(dict(task_id=tid, bslmm_converged=False,
+            rows.append(dict(task_id=tid, run_key=key, bslmm_converged=False,
                              bslmm_error=f"{type(err).__name__}: {err}"))
             continue
         if locus.status != "ok":
@@ -447,7 +481,7 @@ def run_bslmm_shard(run_dir: str, shard: int = 0, n_shards: int = 1,
         futs[tid] = pool.submit(mean_impute_for_bslmm(locus.genotype),
                                 residualize_phenotype(locus.y, locus.covariates), wd, seed)
     for tid, fut in futs.items():
-        r = {"task_id": tid}
+        r = {"task_id": tid, "run_key": key}
         _apply_bslmm(r, fut.result())
         r["bslmm_error"] = r.pop("_bslmm_error", None)
         rows.append(r)
