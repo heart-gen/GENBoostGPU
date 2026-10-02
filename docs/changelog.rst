@@ -4,6 +4,12 @@ Changelog
 Full release notes live on `GitHub <https://github.com/heart-gen/GENBoostGPU/releases>`_.
 The highlights below summarise major updates.
 
+v0.4.1
+   * **Packaging**: ``h5py`` is now a core dependency. ``genboostgpu sites``
+     reads unit phenotypes from ``chr*.beta.h5`` but v0.4.0 did not declare
+     it, so ``sites run`` failed after a plain ``pip install genboostgpu``.
+     v0.4.0 was not published to PyPI.
+
 v0.4.0
    * **New engine for the manuscript endpoints** (``genboostgpu.lgv``,
      ``genboostgpu.lsp``, ``genboostgpu.sites``): Module 02 joint-model

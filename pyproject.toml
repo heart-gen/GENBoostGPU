@@ -25,6 +25,8 @@ pandas = ">=2.0,<3.0.0"
 scipy = ">=1.10"
 pyarrow = ">=23.0.1"
 numba = ">=0.59,<0.62"
+# Site-level unit phenotypes (chr*.beta.h5)
+h5py = ">=3.10"
 # PLINK 2 (.pgen) genotypes
 pgenlib = {version = ">=0.91", optional = true}
 # GPU solver (CUDA 12)
